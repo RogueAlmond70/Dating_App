@@ -1,4 +1,4 @@
-module github.com/RogueAlmond70/muzz-service
+module github.com/RogueAlmond70/Muzz
 
 go 1.24.1
 
