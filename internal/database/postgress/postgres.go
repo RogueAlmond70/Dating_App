@@ -3,8 +3,8 @@ package postgres
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"log"
-	"time"
 
 	"encoding/base64"
 	"encoding/json"
@@ -16,12 +16,14 @@ import (
 
 type Postgres struct {
 	logger         log.Logger
+	db             *sql.DB
 	databaseClient database.DBClient
 }
 
-func NewPostgres(logger log.Logger, databaseClient database.DBClient) *Postgres {
+func NewPostgres(logger log.Logger, sqldb *sql.DB, databaseClient database.DBClient) *Postgres {
 	return &Postgres{
 		logger:         logger,
+		db:             sqldb,
 		databaseClient: databaseClient,
 	}
 }
@@ -40,30 +42,72 @@ func connectDB() (*sql.DB, error) {
 }
 
 type PaginationCursor struct {
-	ID        int       `json:"id"`
-	CreatedAt time.Time `json:"created_at"`
+	ID        int    `json:"id"`
+	CreatedAt uint64 `json:"created_at"`
 }
 
 // This will be called by ListLikedYou
-func (p *Postgres) GetLikes(ctx context.Context, req *explorepb.ListLikedYouRequest) (resp *explorepb.ListLikedYouResponse, err error) {
+func (p *Postgres) GetLikes(ctx context.Context, req *explorepb.ListLikedYouRequest) (*explorepb.ListLikedYouResponse, error) {
 	const pageSize = 25
 
-	var afterCreatedAt time.Time
-	var afterID int
-	var hasCursor bool
+	query := `
+		SELECT liker_id, created_at, id
+		FROM likes
+		WHERE liked_id = $1
+		ORDER BY created_at DESC, id DESC LIMIT $2
+	`
+	args := []interface{}{req.RecipientUserId, pageSize + 1}
 
-	if re.PaginationToken != "" {
-		cursor, err := decodeCursor(req.PaginationToken)
+	rows, err := p.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("unable to run sql query: %v", err)
+		// Add prometheus metric logging here
+	}
+	defer rows.Close()
+
+	var likers []*explorepb.ListLikedYouResponse_Liker
+	var nextCursor *PaginationCursor
+
+	for rows.Next() {
+		var (
+			likerID   string
+			createdAt uint64
+			id        int
+		)
+
+		if err := rows.Scan(&likerID, &createdAt, &id); err != nil {
+			return nil, fmt.Errorf("unable to scan rows: %v", err)
+			// Add prometheus metric logging here.
+		}
+
+		if len(likers) < pageSize {
+			likers = append(likers, &explorepb.ListLikedYouResponse_Liker{
+				ActorId:       likerID,
+				UnixTimestamp: createdAt,
+			})
+		} else {
+			// We've hit one extra result → set next cursor
+			nextCursor = &PaginationCursor{ID: id, CreatedAt: createdAt}
+		}
+	}
+	// Checking for any iteration related errors, connection issues etc
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("row iteration error: %v", err)
 	}
 
-	query :=
-		` SELECT liker_id, created_at, id
-	FROM likes
-	WHERE liked_id = $1
-	AND (created_at, d <$2, $3)
-	ORDER BY created_at DESC, id DESC
-	LIMIT 25;`
+	var nextToken string
+	if nextCursor != nil {
+		nextToken, err = encodeCursor(nextCursor.ID, nextCursor.CreatedAt)
+		if err != nil {
+			return nil, fmt.Errorf("unable to get next token: %v", err)
+			// Add prometheus metric logging here.
+		}
+	}
 
+	return &explorepb.ListLikedYouResponse{
+		Likers:              likers,
+		NextPaginationToken: &nextToken,
+	}, nil
 }
 
 // This will be called by ListNewLikedYou
@@ -99,7 +143,7 @@ type DBClient interface {
 }
 */
 
-func encodeCursor(id int, createdAt time.Time) (string, error) {
+func encodeCursor(id int, createdAt uint64) (string, error) {
 	cursor := PaginationCursor{
 		ID:        id,
 		CreatedAt: createdAt,
@@ -110,6 +154,7 @@ func encodeCursor(id int, createdAt time.Time) (string, error) {
 	}
 	return base64.StdEncoding.EncodeToString(data), nil
 }
+
 func decodeCursor(token string) (*PaginationCursor, error) {
 	data, err := base64.StdEncoding.DecodeString(token)
 	if err != nil {
@@ -119,10 +164,3 @@ func decodeCursor(token string) (*PaginationCursor, error) {
 	err = json.Unmarshal(data, &cursor)
 	return &cursor, err
 }
-
-/* Protobuf definition
-message PaginationToken {
-  int64 created_at_unix_nano = 1;  // Use UnixNano for precise timestamp
-  int64 last_id = 2;               // The last ID from the previous page
-}
-*/
