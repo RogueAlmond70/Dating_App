@@ -58,10 +58,11 @@ func (p *Postgres) GetLikes(ctx context.Context, req *explorepb.ListLikedYouRequ
 	const pageSize = 25
 
 	query := `
-		SELECT liker_id, created_at, id
-		FROM likes
-		WHERE liked_id = $1
-		ORDER BY created_at DESC, id DESC LIMIT $2
+		SELECT DISTINCT ON (liker_id) liker_id, created_at, id
+	FROM likes
+	WHERE liked_id = $1
+	ORDER BY liker_id, created_at DESC, id DESC
+	LIMIT $2	
 	`
 	args := []interface{}{req.RecipientUserId, pageSize + 1}
 
@@ -120,9 +121,83 @@ func (p *Postgres) GetLikes(ctx context.Context, req *explorepb.ListLikedYouRequ
 	}, nil
 }
 
-// This will be called by ListNewLikedYou
+// List all users who liked the recipient excluding those who have been liked in return
 func (p *Postgres) GetNewLikes(ctx context.Context, req *explorepb.ListLikedYouRequest) (resp *explorepb.ListLikedYouResponse, err error) {
-	return nil, nil
+	timer := prometheus.NewTimer(metrics.ListNewLikedYouRequestDurationSeconds)
+	defer timer.ObserveDuration()
+	metrics.ListNewLikedYouRequestsTotal.WithLabelValues().Inc()
+
+	const pageSize = 25
+
+	query := `
+		SELECT l.liker_id, l.created_at, l.id
+		FROM likes l
+		WHERE l.liked_id = $1
+  		AND NOT EXISTS (
+    	SELECT 1
+    	FROM likes l2
+    	WHERE l2.liker_id = $1
+      	AND l2.liked_id = l.liker_id
+      	AND l2.decision = 'like'
+  		)
+		ORDER BY l.created_at DESC, l.id DESC
+		LIMIT $2
+	`
+	args := []interface{}{req.RecipientUserId, pageSize + 1}
+
+	rows, err := p.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		metrics.ListNewLikedYouRequestErrorsTotal.WithLabelValues("sql_query_error").Inc()
+		return nil, fmt.Errorf("unable to run sql query: %v", err)
+	}
+	defer rows.Close()
+
+	var likers []*explorepb.ListLikedYouResponse_Liker
+	var nextCursor *PaginationCursor
+
+	for rows.Next() {
+		var (
+			likerID   string
+			createdAt time.Time
+			id        int
+		)
+
+		if err := rows.Scan(&likerID, &createdAt, &id); err != nil {
+			metrics.ListNewLikedYouRequestErrorsTotal.WithLabelValues("scan_error").Inc()
+			return nil, fmt.Errorf("unable to scan rows: %v", err)
+		}
+
+		unixTimestamp := uint64(createdAt.Unix())
+
+		if len(likers) < pageSize {
+			likers = append(likers, &explorepb.ListLikedYouResponse_Liker{
+				ActorId:       likerID,
+				UnixTimestamp: unixTimestamp,
+			})
+		} else {
+			// We've hit one extra result → set next cursor
+			nextCursor = &PaginationCursor{ID: id, CreatedAt: unixTimestamp}
+		}
+	}
+	// Checking for any iteration related errors, connection issues etc
+	if err := rows.Err(); err != nil {
+		metrics.ListNewLikedYouRequestErrorsTotal.WithLabelValues("row_iteration_error").Inc()
+		return nil, fmt.Errorf("row iteration error: %v", err)
+	}
+
+	var nextToken string
+	if nextCursor != nil {
+		nextToken, err = encodeCursor(nextCursor.ID, nextCursor.CreatedAt)
+		if err != nil {
+			metrics.ListNewLikedYouRequestErrorsTotal.WithLabelValues("cursor_encoding_error").Inc()
+			return nil, fmt.Errorf("unable to get next token: %v", err)
+		}
+	}
+
+	return &explorepb.ListLikedYouResponse{
+		Likers:              likers,
+		NextPaginationToken: &nextToken,
+	}, nil
 }
 
 // This will be called bu CountLikedYou

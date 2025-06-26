@@ -34,7 +34,7 @@ func (s Server) ListNewLikedYou(ctx context.Context, req *pb.ListLikedYouRequest
 	return response, nil
 }
 
-// Record the decision of the actor to like or pass the recipient
+// List all users who liked the recipient excluding those who have been liked in return
 func (s Server) CountLikedYou(ctx context.Context, req *pb.CountLikedYouRequest) (*pb.CountLikedYouResponse, error) {
 	response, err := s.DB.GetCountLikedYou(ctx, req)
 	if err != nil {
@@ -45,7 +45,6 @@ func (s Server) CountLikedYou(ctx context.Context, req *pb.CountLikedYouRequest)
 	return response, nil
 }
 
-// List all users who liked the recipient excluding those who have been liked in return
 func (s Server) PutDecision(ctx context.Context, req *pb.PutDecisionRequest) (*pb.PutDecisionResponse, error) {
 	response, err := s.DB.PutDecision(ctx, req)
 	if err != nil {
