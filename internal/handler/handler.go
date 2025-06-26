@@ -20,7 +20,6 @@ func (s Server) ListLikedYou(ctx context.Context, req *pb.ListLikedYouRequest) (
 	if err != nil {
 		log.Printf("Unable to get likes: %v. Please try again later", err)
 		return nil, fmt.Errorf("unable to get likes: %v", err)
-		// Add prometheus logging as these errors shouldn't be too frequent.
 	}
 	return response, nil
 }

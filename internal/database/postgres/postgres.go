@@ -5,30 +5,33 @@ import (
 	"database/sql"
 	"fmt"
 	"log"
+	"time"
 
 	"encoding/base64"
 	"encoding/json"
 
 	"github.com/RogueAlmond70/Muzz/explorepb"
 	"github.com/RogueAlmond70/Muzz/internal/database"
+	"github.com/RogueAlmond70/Muzz/internal/metrics"
 	_ "github.com/lib/pq"
+	"github.com/prometheus/client_golang/prometheus"
 )
 
+var _ database.DBClient = &Postgres{}
+
 type Postgres struct {
-	logger         log.Logger
-	db             *sql.DB
-	databaseClient database.DBClient
+	logger log.Logger
+	db     *sql.DB
 }
 
-func NewPostgres(logger log.Logger, sqldb *sql.DB, databaseClient database.DBClient) *Postgres {
+func NewPostgres(logger log.Logger, sqldb *sql.DB) *Postgres {
 	return &Postgres{
-		logger:         logger,
-		db:             sqldb,
-		databaseClient: databaseClient,
+		logger: logger,
+		db:     sqldb,
 	}
 }
 
-func connectDB() (*sql.DB, error) {
+func ConnectDB() (*sql.DB, error) {
 	connStr := "postgres://postgres:password@localhost:5432/myappdb?sslmode=disable"
 	db, err := sql.Open("postgres", connStr)
 	if err != nil {
@@ -48,6 +51,10 @@ type PaginationCursor struct {
 
 // This will be called by ListLikedYou
 func (p *Postgres) GetLikes(ctx context.Context, req *explorepb.ListLikedYouRequest) (*explorepb.ListLikedYouResponse, error) {
+	timer := prometheus.NewTimer(metrics.ListLikedYouRequestDurationSeconds)
+	defer timer.ObserveDuration()
+	metrics.ListLikedYouRequestsTotal.WithLabelValues().Inc()
+
 	const pageSize = 25
 
 	query := `
@@ -60,8 +67,8 @@ func (p *Postgres) GetLikes(ctx context.Context, req *explorepb.ListLikedYouRequ
 
 	rows, err := p.db.QueryContext(ctx, query, args...)
 	if err != nil {
+		metrics.ListLikedYouRequestErrorsTotal.WithLabelValues("sql_query_error").Inc()
 		return nil, fmt.Errorf("unable to run sql query: %v", err)
-		// Add prometheus metric logging here
 	}
 	defer rows.Close()
 
@@ -71,27 +78,30 @@ func (p *Postgres) GetLikes(ctx context.Context, req *explorepb.ListLikedYouRequ
 	for rows.Next() {
 		var (
 			likerID   string
-			createdAt uint64
+			createdAt time.Time
 			id        int
 		)
 
 		if err := rows.Scan(&likerID, &createdAt, &id); err != nil {
+			metrics.ListLikedYouRequestErrorsTotal.WithLabelValues("scan_error").Inc()
 			return nil, fmt.Errorf("unable to scan rows: %v", err)
-			// Add prometheus metric logging here.
 		}
+
+		unixTimestamp := uint64(createdAt.Unix())
 
 		if len(likers) < pageSize {
 			likers = append(likers, &explorepb.ListLikedYouResponse_Liker{
 				ActorId:       likerID,
-				UnixTimestamp: createdAt,
+				UnixTimestamp: unixTimestamp,
 			})
 		} else {
 			// We've hit one extra result → set next cursor
-			nextCursor = &PaginationCursor{ID: id, CreatedAt: createdAt}
+			nextCursor = &PaginationCursor{ID: id, CreatedAt: unixTimestamp}
 		}
 	}
 	// Checking for any iteration related errors, connection issues etc
 	if err := rows.Err(); err != nil {
+		metrics.ListLikedYouRequestErrorsTotal.WithLabelValues("row_iteration_error").Inc()
 		return nil, fmt.Errorf("row iteration error: %v", err)
 	}
 
@@ -99,8 +109,8 @@ func (p *Postgres) GetLikes(ctx context.Context, req *explorepb.ListLikedYouRequ
 	if nextCursor != nil {
 		nextToken, err = encodeCursor(nextCursor.ID, nextCursor.CreatedAt)
 		if err != nil {
+			metrics.ListLikedYouRequestErrorsTotal.WithLabelValues("cursor_encoding_error").Inc()
 			return nil, fmt.Errorf("unable to get next token: %v", err)
-			// Add prometheus metric logging here.
 		}
 	}
 
@@ -111,13 +121,19 @@ func (p *Postgres) GetLikes(ctx context.Context, req *explorepb.ListLikedYouRequ
 }
 
 // This will be called by ListNewLikedYou
-func (p *Postgres) GetNewLikes(ctx context.Context, re *explorepb.ListLikedYouRequest) (resp *explorepb.ListLikedYouResponse, err error) {
-
+func (p *Postgres) GetNewLikes(ctx context.Context, req *explorepb.ListLikedYouRequest) (resp *explorepb.ListLikedYouResponse, err error) {
+	return nil, nil
 }
 
 // This will be called bu CountLikedYou
+func (p *Postgres) GetCountLikedYou(ctx context.Context, req *explorepb.CountLikedYouRequest) (resp *explorepb.CountLikedYouResponse, err error) {
+	return nil, nil
+}
 
 // This will be called by PutDecision
+func (p *Postgres) PutDecision(ctx context.Context, req *explorepb.PutDecisionRequest) (resp *explorepb.PutDecisionResponse, err error) {
+	return nil, nil
+}
 
 /*
 func (UnimplementedExploreServiceServer) ListLikedYou(context.Context, *ListLikedYouRequest) (*ListLikedYouResponse, error) {
