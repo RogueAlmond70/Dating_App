@@ -3,6 +3,7 @@ module github.com/RogueAlmond70/Muzz
 go 1.24.1
 
 require (
+	github.com/lib/pq v1.10.9
 	google.golang.org/grpc v1.73.0
 	google.golang.org/protobuf v1.36.6
 )

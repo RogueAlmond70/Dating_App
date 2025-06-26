@@ -2,25 +2,57 @@ package handler
 
 import (
 	"context"
+	"fmt"
+
+	"log"
 
 	pb "github.com/RogueAlmond70/Muzz/explorepb"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
+	"github.com/RogueAlmond70/Muzz/internal/database"
 )
 
 type Server struct {
 	pb.UnimplementedExploreServiceServer
+	DB database.DBClient
 }
 
-func (Server) ListLikedYou(context.Context, *pb.ListLikedYouRequest) (*pb.ListLikedYouResponse, error) {
-	return nil, status.Errorf(codes.Unimplemented, "method ListLikedYou not implemented")
+func (s Server) ListLikedYou(ctx context.Context, req *pb.ListLikedYouRequest) (*pb.ListLikedYouResponse, error) {
+	response, err := s.DB.GetLikes(ctx, req)
+	if err != nil {
+		log.Printf("Unable to get likes: %v. Please try again later", err)
+		return nil, fmt.Errorf("unable to get likes: %v", err)
+		// Add prometheus logging as these errors shouldn't be too frequent.
+	}
+	return response, nil
 }
-func (Server) ListNewLikedYou(context.Context, *pb.ListLikedYouRequest) (*pb.ListLikedYouResponse, error) {
-	return nil, status.Errorf(codes.Unimplemented, "method ListNewLikedYou not implemented")
+
+func (s Server) ListNewLikedYou(ctx context.Context, req *pb.ListLikedYouRequest) (*pb.ListLikedYouResponse, error) {
+	response, err := s.DB.GetNewLikes(ctx, req)
+	if err != nil {
+		log.Printf("Unable to get new likes: %v. Please try again later.", err)
+		return nil, fmt.Errorf("unable to get new likes: %v", err)
+		// Add prometheus logging
+	}
+	return response, nil
 }
-func (Server) CountLikedYou(context.Context, *pb.CountLikedYouRequest) (*pb.CountLikedYouResponse, error) {
-	return nil, status.Errorf(codes.Unimplemented, "method CountLikedYou not implemented")
+
+// Record the decision of the actor to like or pass the recipient
+func (s Server) CountLikedYou(ctx context.Context, req *pb.CountLikedYouRequest) (*pb.CountLikedYouResponse, error) {
+	response, err := s.DB.GetCountLikedYou(ctx, req)
+	if err != nil {
+		log.Printf("Unable to get count of likes: %v. Please try again later.", err)
+		return nil, fmt.Errorf("unable to get count of likes: %v", err)
+		// Add prometheus logging
+	}
+	return response, nil
 }
-func (Server) PutDecision(context.Context, *pb.PutDecisionRequest) (*pb.PutDecisionResponse, error) {
-	return nil, status.Errorf(codes.Unimplemented, "method PutDecision not implemented")
+
+// List all users who liked the recipient excluding those who have been liked in return
+func (s Server) PutDecision(ctx context.Context, req *pb.PutDecisionRequest) (*pb.PutDecisionResponse, error) {
+	response, err := s.DB.PutDecision(ctx, req)
+	if err != nil {
+		log.Printf("Unable to set decision request: %v. Please try again later.", err)
+		return nil, fmt.Errorf("unable to set decision request: %v", err)
+		// Add prometheus logging
+	}
+	return response, nil
 }
