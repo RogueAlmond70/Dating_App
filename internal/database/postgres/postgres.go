@@ -202,6 +202,9 @@ func (p *Postgres) GetNewLikes(ctx context.Context, req *explorepb.ListLikedYouR
 
 // This will be called bu CountLikedYou
 func (p *Postgres) GetCountLikedYou(ctx context.Context, req *explorepb.CountLikedYouRequest) (resp *explorepb.CountLikedYouResponse, err error) {
+	timer := prometheus.NewTimer(metrics.ListNewLikedYouRequestDurationSeconds)
+	defer timer.ObserveDuration()
+	metrics.ListNewLikedYouRequestsTotal.WithLabelValues().Inc()
 	return nil, nil
 }
 
