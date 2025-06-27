@@ -258,7 +258,29 @@ func (p *Postgres) GetCountLikedYou(ctx context.Context, req *explorepb.CountLik
 	timer := prometheus.NewTimer(metrics.ListNewLikedYouRequestDurationSeconds)
 	defer timer.ObserveDuration()
 	metrics.ListNewLikedYouRequestsTotal.WithLabelValues().Inc()
-	return nil, nil
+
+	query := `
+	SELECT COUNT(DISTINCT l.liker_id)
+    FROM likes l
+    WHERE l.liked_id = $1
+    AND NOT EXISTS (
+    SELECT 1
+    FROM likes l2
+    WHERE l2.liker_id = $1
+      AND l2.liked_id = l.liker_id
+      AND l2.decision = 'like'
+  )`
+
+	var count int64
+	err = p.db.QueryRowContext(ctx, query, req.RecipientUserId).Scan(&count)
+	if err != nil {
+		metrics.ListNewLikedYouRequestErrorsTotal.WithLabelValues("sql_query_error").Inc()
+		// Prometheus metrics here
+		return nil, fmt.Errorf("unable to query count: %w", err)
+	}
+
+	return &explorepb.CountLikedYouResponse{Count: uint64(count)}, nil
+
 }
 
 // This will be called by PutDecision
