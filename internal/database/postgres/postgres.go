@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
 	"time"
 
 	"github.com/RogueAlmond70/Muzz/explorepb"
@@ -15,6 +14,7 @@ import (
 	"github.com/RogueAlmond70/Muzz/internal/metrics"
 	_ "github.com/lib/pq"
 	"github.com/prometheus/client_golang/prometheus"
+	"go.uber.org/zap"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -22,11 +22,11 @@ import (
 var _ database.DBClient = &Postgres{}
 
 type Postgres struct {
-	logger log.Logger
+	logger zap.Logger
 	db     *sql.DB
 }
 
-func NewPostgres(logger log.Logger, sqldb *sql.DB) *Postgres {
+func NewPostgres(logger zap.Logger, sqldb *sql.DB) *Postgres {
 	return &Postgres{
 		logger: logger,
 		db:     sqldb,
@@ -37,11 +37,10 @@ func ConnectDB() (*sql.DB, error) {
 	connStr := "postgres://postgres:password@localhost:5432/myappdb?sslmode=disable"
 	db, err := sql.Open("postgres", connStr)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("error connecting to database: %v:", err)
 	}
-	// Optional: ping to verify connection
 	if err := db.Ping(); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("error checking database connection: %v", err)
 	}
 	return db, nil
 }
@@ -66,6 +65,7 @@ func (p *Postgres) GetLikes(ctx context.Context, req *explorepb.ListLikedYouRequ
 	if req.PaginationToken != nil && *req.PaginationToken != "" {
 		cursor, err := decodeCursor(*req.PaginationToken)
 		if err != nil {
+			p.logger.Error("error decoding cursor: err", zap.Error(err))
 			return nil, status.Errorf(codes.InvalidArgument, "invalid pagination token")
 		}
 		afterCreatedAt = time.Unix(int64(cursor.CreatedAt), 0)
@@ -99,6 +99,7 @@ FROM latest_likes
 	rows, err := p.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		metrics.ListLikedYouRequestErrorsTotal.WithLabelValues("sql_query_error").Inc()
+		p.logger.Error("unable to run sql query", zap.Error(err))
 		return nil, fmt.Errorf("unable to run sql query: %v", err)
 	}
 	defer rows.Close()
@@ -115,6 +116,7 @@ FROM latest_likes
 
 		if err := rows.Scan(&likerID, &createdAt, &id); err != nil {
 			metrics.ListLikedYouRequestErrorsTotal.WithLabelValues("scan_error").Inc()
+			p.logger.Error("unable to scan rows", zap.Error(err))
 			return nil, fmt.Errorf("unable to scan rows: %v", err)
 		}
 
@@ -133,6 +135,7 @@ FROM latest_likes
 	// Checking for any iteration related errors, connection issues etc
 	if err := rows.Err(); err != nil {
 		metrics.ListLikedYouRequestErrorsTotal.WithLabelValues("row_iteration_error").Inc()
+		p.logger.Error("row iteration error", zap.Error(err))
 		return nil, fmt.Errorf("row iteration error: %v", err)
 	}
 
@@ -141,6 +144,7 @@ FROM latest_likes
 		nextToken, err = encodeCursor(nextCursor.ID, nextCursor.CreatedAt)
 		if err != nil {
 			metrics.ListLikedYouRequestErrorsTotal.WithLabelValues("cursor_encoding_error").Inc()
+			p.logger.Error("unable to get next token", zap.Error(err))
 			return nil, fmt.Errorf("unable to get next token: %v", err)
 		}
 	}
@@ -166,6 +170,7 @@ func (p *Postgres) GetNewLikes(ctx context.Context, req *explorepb.ListLikedYouR
 	if req.PaginationToken != nil && *req.PaginationToken != "" {
 		cursor, err := decodeCursor(*req.PaginationToken)
 		if err != nil {
+			p.logger.Error("unable to decode cursor", zap.Error(err))
 			return nil, status.Errorf(codes.InvalidArgument, "invalid pagination token")
 		}
 		afterCreatedAt = time.Unix(int64(cursor.CreatedAt), 0)
@@ -182,7 +187,7 @@ func (p *Postgres) GetNewLikes(ctx context.Context, req *explorepb.ListLikedYouR
 	    FROM likes l2
 	    WHERE l2.liker_id = $1
 	      AND l2.liked_id = l.liker_id
-	      AND l2.decision = 'like'
+	      AND l2.decision = true
 	  )
 `
 
@@ -201,6 +206,7 @@ func (p *Postgres) GetNewLikes(ctx context.Context, req *explorepb.ListLikedYouR
 	rows, err := p.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		metrics.ListNewLikedYouRequestErrorsTotal.WithLabelValues("sql_query_error").Inc()
+		p.logger.Error("unable to run sql query", zap.Error(err))
 		return nil, fmt.Errorf("unable to run sql query: %v", err)
 	}
 	defer rows.Close()
@@ -217,6 +223,7 @@ func (p *Postgres) GetNewLikes(ctx context.Context, req *explorepb.ListLikedYouR
 
 		if err := rows.Scan(&likerID, &createdAt, &id); err != nil {
 			metrics.ListNewLikedYouRequestErrorsTotal.WithLabelValues("scan_error").Inc()
+			p.logger.Error("unable to scan rows", zap.Error(err))
 			return nil, fmt.Errorf("unable to scan rows: %v", err)
 		}
 
@@ -268,7 +275,7 @@ func (p *Postgres) GetCountLikedYou(ctx context.Context, req *explorepb.CountLik
     FROM likes l2
     WHERE l2.liker_id = $1
       AND l2.liked_id = l.liker_id
-      AND l2.decision = 'like'
+      AND l2.decision = true
   )`
 
 	var count int64
@@ -304,54 +311,32 @@ func (p *Postgres) PutDecision(ctx context.Context, req *explorepb.PutDecisionRe
 	}
 
 	// Check for mutual like only if this user liked the recipient
-	mutualLike := false
+	mutualLikes := false
 	if req.LikedRecipient {
 		checkMutualQuery := `
-			SELECT 1
+			SELECT TRUE
 			FROM likes
-			WHERE liker_id = $2 AND liked_id = $1 AND decision = 'like'
+			WHERE liker_id = $2 AND liked_id = $1 AND decision = TRUE
 			LIMIT 1
 		`
 		var exists bool
 		err := p.db.QueryRowContext(ctx, checkMutualQuery, req.ActorUserId, req.RecipientUserId).Scan(&exists)
-		if err == nil {
-			mutualLike = exists
-		} else if errors.Is(err, sql.ErrNoRows) {
-			metrics.PutDecisionRequestErrorsTotal.WithLabelValues("mutual_check_error").Inc()
-			return nil, fmt.Errorf("error checking for mutual like: %v", err)
+
+		if errors.Is(err, sql.ErrNoRows) { // No Rows is not necesarily an error, but it does mean there is no mutual like.
+			metrics.PutDecisionNoMutualLikesTotal.WithLabelValues("no_mutual_like").Inc()
+			return &explorepb.PutDecisionResponse{
+				MutualLikes: false,
+			}, nil
 		} else if err != nil {
 			metrics.PutDecisionRequestErrorsTotal.WithLabelValues("general_error").Inc()
 			return nil, fmt.Errorf("error checking for mutual like: %v", err)
 		}
+		mutualLikes = true
 	}
 	return &explorepb.PutDecisionResponse{
-		MutualLikes: mutualLike,
+		MutualLikes: mutualLikes,
 	}, nil
 }
-
-/*
-func (UnimplementedExploreServiceServer) ListLikedYou(context.Context, *ListLikedYouRequest) (*ListLikedYouResponse, error) {
-	return nil, status.Errorf(codes.Unimplemented, "method ListLikedYou not implemented")
-}
-func (UnimplementedExploreServiceServer) ListNewLikedYou(context.Context, *ListLikedYouRequest) (*ListLikedYouResponse, error) {
-	return nil, status.Errorf(codes.Unimplemented, "method ListNewLikedYou not implemented")
-}
-func (UnimplementedExploreServiceServer) CountLikedYou(context.Context, *CountLikedYouRequest) (*CountLikedYouResponse, error) {
-	return nil, status.Errorf(codes.Unimplemented, "method CountLikedYou not implemented")
-}
-func (UnimplementedExploreServiceServer) PutDecision(context.Context, *PutDecisionRequest) (*PutDecisionResponse, error) {
-	return nil, status.Errorf(codes.Unimplemented, "method PutDecision not implemented")
-
-
-
-
-type DBClient interface {
-	GetLikes(ctx context.Context, recipientUserID string) (actorIDs []string, err error)
-	GetNewLikes(ctx context.Context, recipientUserID string) (actorIDs []string, err error)
-	GetCountLikedYou(ctx context.Context, recipientUserID string) (countLikedYou int, err error)
-	PutDecisionResponse(ctx context.Context, actorUserID string, RecipientUserID string) (decision bool, err error)
-}
-*/
 
 func encodeCursor(id int, createdAt uint64) (string, error) {
 	cursor := PaginationCursor{
@@ -371,6 +356,25 @@ func decodeCursor(token string) (*PaginationCursor, error) {
 		return nil, err
 	}
 	var cursor PaginationCursor
-	err = json.Unmarshal(data, &cursor)
-	return &cursor, err
+	if err := json.Unmarshal(data, &cursor); err != nil {
+		return nil, err
+	}
+	if err := validateCursor(&cursor); err != nil {
+		return nil, err
+	}
+	return &cursor, nil
+}
+
+func validateCursor(c *PaginationCursor) error {
+	if c.ID < 0 {
+		return fmt.Errorf("invalid cursor: ID cannot be negative")
+	}
+	if c.CreatedAt == 0 {
+		return fmt.Errorf("invalid cursor: CreatedAt timestamp is zero")
+	}
+	now := uint64(time.Now().Unix())
+	if c.CreatedAt > now+3600 { // One hour
+		return fmt.Errorf("invalid cursor: CreatedAt timestamp is in the future")
+	}
+	return nil
 }

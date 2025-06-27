@@ -102,6 +102,24 @@ var (
 		},
 		[]string{},
 	)
+	PutDecisionMutualLikesTotal = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Namespace: namespace,
+			Subsystem: "likes",
+			Name:      "put_decision_mutual_matches_total",
+			Help:      "Counter of mutual matches",
+		},
+		[]string{},
+	)
+	PutDecisionNoMutualLikesTotal = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Namespace: namespace,
+			Subsystem: "likes",
+			Name:      "put_decision_no_mutual_matches_total",
+			Help:      "Counter of non mutual matches",
+		},
+		[]string{},
+	)
 	PutDecisionRequestErrorsTotal = promauto.NewCounterVec(
 		prometheus.CounterOpts{
 			Namespace: namespace,
