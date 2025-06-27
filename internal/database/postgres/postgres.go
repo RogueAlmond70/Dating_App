@@ -71,9 +71,6 @@ func (p *Postgres) GetLikes(ctx context.Context, req *explorepb.ListLikedYouRequ
 		afterCreatedAt = time.Unix(int64(cursor.CreatedAt), 0)
 		afterID = cursor.ID
 		hasCursor = true
-		// Debugging
-		p.logger.Printf("afterCreatedAt = %v", afterCreatedAt)
-		p.logger.Printf("afterID = %v", afterID)
 	}
 
 	query := `
@@ -99,11 +96,7 @@ FROM latest_likes
 		args = append(args, pageSize+1)
 	}
 
-	p.logger.Printf("args: %v", args...)
-
 	rows, err := p.db.QueryContext(ctx, query, args...)
-	// debugging
-	p.logger.Println("Running query...")
 	if err != nil {
 		metrics.ListLikedYouRequestErrorsTotal.WithLabelValues("sql_query_error").Inc()
 		return nil, fmt.Errorf("unable to run sql query: %v", err)
@@ -128,20 +121,12 @@ FROM latest_likes
 		unixTimestamp := uint64(createdAt.Unix())
 
 		if len(likers) < pageSize {
-			// Debugging
-			p.logger.Printf("len likers inside check = %v", len(likers))
 			likers = append(likers, &explorepb.ListLikedYouResponse_Liker{
 				ActorId:       likerID,
 				UnixTimestamp: unixTimestamp,
 			})
 		} else {
 			// We've hit one extra result → set next cursor
-			//Debugging. length of likers should be MORE THAN page size at this point
-			p.logger.Printf("len likers = %v", len(likers))
-			p.logger.Printf("page size = %v", pageSize)
-			p.logger.Printf("created at: %v ID: %v", createdAt, id)
-			p.logger.Printf("unixTimestamp %v", unixTimestamp)
-			//p.logger.Printf("same timestamp?: %v", uint64("2025-06-26 20:00:31"))
 			nextCursor = &PaginationCursor{ID: id, CreatedAt: unixTimestamp}
 		}
 	}
