@@ -49,7 +49,7 @@ type PaginationCursor struct {
 	CreatedAt uint64 `json:"created_at"`
 }
 
-// This will be called by ListLikedYou
+// This will be called by ListLikedYou, and needs to be called repeatedly o as not to overwhelm device
 func (p *Postgres) GetLikes(ctx context.Context, req *explorepb.ListLikedYouRequest) (*explorepb.ListLikedYouResponse, error) {
 	timer := prometheus.NewTimer(metrics.ListLikedYouRequestDurationSeconds)
 	defer timer.ObserveDuration()
