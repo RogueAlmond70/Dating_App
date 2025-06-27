@@ -14,6 +14,7 @@ CREATE TABLE likes (
     created_at TIMESTAMP NOT NULL DEFAULT NOW(),
     decision decision_status,
     decision_at TIMESTAMP
+    UNIQUE (liker_id, liked_id) -- This enables updating of a row when liker_id and liked_id match the existing row.
 );
 
 CREATE INDEX idx_likes_liked_id ON likes (liked_id);

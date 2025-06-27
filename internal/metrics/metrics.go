@@ -93,4 +93,31 @@ var (
 			Buckets:   prometheus.DefBuckets,
 		},
 	)
+	PutDecisionRequestsTotal = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Namespace: namespace,
+			Subsystem: "likes",
+			Name:      "put_decision_requests_total",
+			Help:      "Counter of requests to explore-service to check mutual likes",
+		},
+		[]string{},
+	)
+	PutDecisionRequestErrorsTotal = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Namespace: namespace,
+			Subsystem: "likes",
+			Name:      "put_decision_request_errors_total",
+			Help:      "Counter of errored requests to explore-service to check mutual likes",
+		},
+		[]string{"error_type"},
+	)
+	PutDecisionRequestDurationSeconds = promauto.NewHistogram(
+		prometheus.HistogramOpts{
+			Namespace: namespace,
+			Subsystem: "likes",
+			Name:      "put_decision_requests_duration_seconds",
+			Help:      "Latency histogram for put decision calls",
+			Buckets:   prometheus.DefBuckets,
+		},
+	)
 )

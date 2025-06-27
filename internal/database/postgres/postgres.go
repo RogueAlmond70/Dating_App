@@ -3,12 +3,12 @@ package postgres
 import (
 	"context"
 	"database/sql"
+	"encoding/base64"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"time"
-
-	"encoding/base64"
-	"encoding/json"
 
 	"github.com/RogueAlmond70/Muzz/explorepb"
 	"github.com/RogueAlmond70/Muzz/internal/database"
@@ -283,9 +283,50 @@ func (p *Postgres) GetCountLikedYou(ctx context.Context, req *explorepb.CountLik
 
 }
 
-// This will be called by PutDecision
+// Record the decision of the actor to like or pass the recipient
 func (p *Postgres) PutDecision(ctx context.Context, req *explorepb.PutDecisionRequest) (resp *explorepb.PutDecisionResponse, err error) {
-	return nil, nil
+	timer := prometheus.NewTimer(metrics.PutDecisionRequestDurationSeconds)
+	defer timer.ObserveDuration()
+	metrics.PutDecisionRequestsTotal.WithLabelValues().Inc()
+
+	query := `
+		INSERT INTO likes (liker_id, liked_id, decision, decision_at, created_at)
+		VALUES ($1, $2, $3, NOW(), NOW())
+		ON CONFLICT (liker_id, liked_id)
+		DO UPDATE SET decision = EXCLUDED.decision, decision_at = EXCLUDED.decision_at
+		RETURNING decision
+		`
+
+	_, err = p.db.ExecContext(ctx, query, req.ActorUserId, req.RecipientUserId, req.LikedRecipient)
+	if err != nil {
+		metrics.PutDecisionRequestErrorsTotal.WithLabelValues("insert_update_error").Inc()
+		return nil, fmt.Errorf("failed to insert or update like decision: %v", err)
+	}
+
+	// Check for mutual like only if this user liked the recipient
+	mutualLike := false
+	if req.LikedRecipient {
+		checkMutualQuery := `
+			SELECT 1
+			FROM likes
+			WHERE liker_id = $2 AND liked_id = $1 AND decision = 'like'
+			LIMIT 1
+		`
+		var exists bool
+		err := p.db.QueryRowContext(ctx, checkMutualQuery, req.ActorUserId, req.RecipientUserId).Scan(&exists)
+		if err == nil {
+			mutualLike = exists
+		} else if errors.Is(err, sql.ErrNoRows) {
+			metrics.PutDecisionRequestErrorsTotal.WithLabelValues("mutual_check_error").Inc()
+			return nil, fmt.Errorf("error checking for mutual like: %v", err)
+		} else if err != nil {
+			metrics.PutDecisionRequestErrorsTotal.WithLabelValues("general_error").Inc()
+			return nil, fmt.Errorf("error checking for mutual like: %v", err)
+		}
+	}
+	return &explorepb.PutDecisionResponse{
+		MutualLikes: mutualLike,
+	}, nil
 }
 
 /*
