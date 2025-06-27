@@ -15,6 +15,8 @@ import (
 	"github.com/RogueAlmond70/Muzz/internal/metrics"
 	_ "github.com/lib/pq"
 	"github.com/prometheus/client_golang/prometheus"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 var _ database.DBClient = &Postgres{}
@@ -57,16 +59,51 @@ func (p *Postgres) GetLikes(ctx context.Context, req *explorepb.ListLikedYouRequ
 
 	const pageSize = 25
 
+	var afterCreatedAt time.Time
+	var afterID int
+	var hasCursor bool
+
+	if req.PaginationToken != nil && *req.PaginationToken != "" {
+		cursor, err := decodeCursor(*req.PaginationToken)
+		if err != nil {
+			return nil, status.Errorf(codes.InvalidArgument, "invalid pagination token")
+		}
+		afterCreatedAt = time.Unix(int64(cursor.CreatedAt), 0)
+		afterID = cursor.ID
+		hasCursor = true
+		// Debugging
+		p.logger.Printf("afterCreatedAt = %v", afterCreatedAt)
+		p.logger.Printf("afterID = %v", afterID)
+	}
+
 	query := `
-		SELECT DISTINCT ON (liker_id) liker_id, created_at, id
-	FROM likes
-	WHERE liked_id = $1
-	ORDER BY liker_id, created_at DESC, id DESC
-	LIMIT $2	
-	`
-	args := []interface{}{req.RecipientUserId, pageSize + 1}
+WITH latest_likes AS (
+  SELECT DISTINCT ON (liker_id) liker_id, created_at, id
+  FROM likes
+  WHERE liked_id = $1
+  ORDER BY liker_id, created_at DESC, id DESC
+)
+SELECT liker_id, created_at, id
+FROM latest_likes
+`
+
+	args := []interface{}{req.RecipientUserId}
+
+	if hasCursor {
+		query += " WHERE (created_at, id) < ($2, $3)"
+		args = append(args, afterCreatedAt.UTC(), afterID)
+		query += " ORDER BY created_at DESC, id DESC LIMIT $4"
+		args = append(args, pageSize+1)
+	} else {
+		query += " ORDER BY created_at DESC, id DESC LIMIT $2"
+		args = append(args, pageSize+1)
+	}
+
+	p.logger.Printf("args: %v", args...)
 
 	rows, err := p.db.QueryContext(ctx, query, args...)
+	// debugging
+	p.logger.Println("Running query...")
 	if err != nil {
 		metrics.ListLikedYouRequestErrorsTotal.WithLabelValues("sql_query_error").Inc()
 		return nil, fmt.Errorf("unable to run sql query: %v", err)
@@ -91,12 +128,20 @@ func (p *Postgres) GetLikes(ctx context.Context, req *explorepb.ListLikedYouRequ
 		unixTimestamp := uint64(createdAt.Unix())
 
 		if len(likers) < pageSize {
+			// Debugging
+			p.logger.Printf("len likers inside check = %v", len(likers))
 			likers = append(likers, &explorepb.ListLikedYouResponse_Liker{
 				ActorId:       likerID,
 				UnixTimestamp: unixTimestamp,
 			})
 		} else {
 			// We've hit one extra result → set next cursor
+			//Debugging. length of likers should be MORE THAN page size at this point
+			p.logger.Printf("len likers = %v", len(likers))
+			p.logger.Printf("page size = %v", pageSize)
+			p.logger.Printf("created at: %v ID: %v", createdAt, id)
+			p.logger.Printf("unixTimestamp %v", unixTimestamp)
+			//p.logger.Printf("same timestamp?: %v", uint64("2025-06-26 20:00:31"))
 			nextCursor = &PaginationCursor{ID: id, CreatedAt: unixTimestamp}
 		}
 	}

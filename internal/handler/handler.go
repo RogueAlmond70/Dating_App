@@ -17,6 +17,9 @@ type Server struct {
 
 func (s Server) ListLikedYou(ctx context.Context, req *pb.ListLikedYouRequest) (*pb.ListLikedYouResponse, error) {
 	response, err := s.DB.GetLikes(ctx, req)
+	// debugging
+	log.Printf("pagination token from request in server: %v ", req.GetPaginationToken())
+	log.Printf("pagination token from response in server: %v", response.GetNextPaginationToken())
 	if err != nil {
 		log.Printf("Unable to get likes: %v. Please try again later", err)
 		return nil, fmt.Errorf("unable to get likes: %v", err)
