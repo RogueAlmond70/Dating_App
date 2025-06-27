@@ -159,21 +159,44 @@ func (p *Postgres) GetNewLikes(ctx context.Context, req *explorepb.ListLikedYouR
 
 	const pageSize = 25
 
+	var afterCreatedAt time.Time
+	var afterID int
+	var hasCursor bool
+
+	if req.PaginationToken != nil && *req.PaginationToken != "" {
+		cursor, err := decodeCursor(*req.PaginationToken)
+		if err != nil {
+			return nil, status.Errorf(codes.InvalidArgument, "invalid pagination token")
+		}
+		afterCreatedAt = time.Unix(int64(cursor.CreatedAt), 0)
+		afterID = cursor.ID
+		hasCursor = true
+	}
+
 	query := `
-		SELECT l.liker_id, l.created_at, l.id
-		FROM likes l
-		WHERE l.liked_id = $1
-  		AND NOT EXISTS (
-    	SELECT 1
-    	FROM likes l2
-    	WHERE l2.liker_id = $1
-      	AND l2.liked_id = l.liker_id
-      	AND l2.decision = 'like'
-  		)
-		ORDER BY l.created_at DESC, l.id DESC
-		LIMIT $2
-	`
-	args := []interface{}{req.RecipientUserId, pageSize + 1}
+	SELECT l.liker_id, l.created_at, l.id
+	FROM likes l
+	WHERE l.liked_id = $1
+	  AND NOT EXISTS (
+	    SELECT 1
+	    FROM likes l2
+	    WHERE l2.liker_id = $1
+	      AND l2.liked_id = l.liker_id
+	      AND l2.decision = 'like'
+	  )
+`
+
+	args := []interface{}{req.RecipientUserId}
+
+	if hasCursor {
+		query += " AND (l.created_at, l.id) < ($2, $3)"
+		args = append(args, afterCreatedAt.UTC(), afterID)
+		query += " ORDER BY l.created_at DESC, l.id DESC LIMIT $4"
+		args = append(args, pageSize+1)
+	} else {
+		query += " ORDER BY l.created_at DESC, l.id DESC LIMIT $2"
+		args = append(args, pageSize+1)
+	}
 
 	rows, err := p.db.QueryContext(ctx, query, args...)
 	if err != nil {
@@ -207,6 +230,8 @@ func (p *Postgres) GetNewLikes(ctx context.Context, req *explorepb.ListLikedYouR
 		} else {
 			// We've hit one extra result → set next cursor
 			nextCursor = &PaginationCursor{ID: id, CreatedAt: unixTimestamp}
+			p.logger.Printf("created at %v", unixTimestamp)
+			p.logger.Printf("created at time %v", createdAt)
 		}
 	}
 	// Checking for any iteration related errors, connection issues etc
@@ -230,7 +255,7 @@ func (p *Postgres) GetNewLikes(ctx context.Context, req *explorepb.ListLikedYouR
 	}, nil
 }
 
-// This will be called bu CountLikedYou
+// This will be called by CountLikedYou
 func (p *Postgres) GetCountLikedYou(ctx context.Context, req *explorepb.CountLikedYouRequest) (resp *explorepb.CountLikedYouResponse, err error) {
 	timer := prometheus.NewTimer(metrics.ListNewLikedYouRequestDurationSeconds)
 	defer timer.ObserveDuration()

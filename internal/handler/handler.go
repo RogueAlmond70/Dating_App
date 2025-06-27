@@ -17,6 +17,7 @@ type Server struct {
 
 func (s Server) ListLikedYou(ctx context.Context, req *pb.ListLikedYouRequest) (*pb.ListLikedYouResponse, error) {
 	response, err := s.DB.GetLikes(ctx, req)
+
 	if err != nil {
 		log.Printf("Unable to get likes: %v. Please try again later", err)
 		return nil, fmt.Errorf("unable to get likes: %v", err)
