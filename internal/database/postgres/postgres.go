@@ -230,8 +230,6 @@ func (p *Postgres) GetNewLikes(ctx context.Context, req *explorepb.ListLikedYouR
 		} else {
 			// We've hit one extra result → set next cursor
 			nextCursor = &PaginationCursor{ID: id, CreatedAt: unixTimestamp}
-			p.logger.Printf("created at %v", unixTimestamp)
-			p.logger.Printf("created at time %v", createdAt)
 		}
 	}
 	// Checking for any iteration related errors, connection issues etc
