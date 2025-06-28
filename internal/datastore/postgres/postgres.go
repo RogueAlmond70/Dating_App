@@ -65,10 +65,10 @@ func ConnectDB() (*sql.DB, error) {
 	connStr := getPostgresConnStr()
 	db, err := sql.Open("postgres", connStr)
 	if err != nil {
-		return nil, fmt.Errorf("error connecting to database: %v", err)
+		return nil, fmt.Errorf("error connecting to database: %w", err)
 	}
 	if err := db.Ping(); err != nil {
-		return nil, fmt.Errorf("error checking database connection: %v", err)
+		return nil, fmt.Errorf("error checking database connection: %w", err)
 	}
 	return db, nil
 }
@@ -84,7 +84,7 @@ func ConnectDBWithRetry(maxRetries int, delay time.Duration) (*sql.DB, error) {
 		fmt.Printf("Failed to connect to DB (attempt %d/%d): %v\n", i+1, maxRetries, err)
 		time.Sleep(delay)
 	}
-	return nil, fmt.Errorf("failed to connect to database after %d attempts: %v", maxRetries, err)
+	return nil, fmt.Errorf("failed to connect to database after %d attempts: %w", maxRetries, err)
 }
 
 func (p *Postgres) GetLikes(ctx context.Context, req *explorepb.ListLikedYouRequest) (*explorepb.ListLikedYouResponse, error) {
@@ -126,15 +126,16 @@ func (p *Postgres) GetLikes(ctx context.Context, req *explorepb.ListLikedYouRequ
 	}
 
 	query := `
-WITH latest_likes AS (
-  SELECT DISTINCT ON (liker_id) liker_id, created_at, id
-  FROM likes
-  WHERE liked_id = $1 AND decision = true
-  ORDER BY liker_id, created_at DESC, id DESC
-)
-SELECT liker_id, created_at, id
-FROM latest_likes
-`
+	WITH latest_likes AS (
+	SELECT DISTINCT ON (liker_id) liker_id, created_at, id
+	FROM likes
+	WHERE liked_id = $1 AND decision = true
+	AND created_at >= NOW() - INTERVAL '1 year'
+	ORDER BY liker_id, created_at DESC, id DESC
+	)
+	SELECT liker_id, created_at, id
+	FROM latest_likes 
+	`
 
 	args := []interface{}{req.RecipientUserId}
 
@@ -163,7 +164,7 @@ FROM latest_likes
 			zap.Error(err),
 			zap.String("recipientID", req.GetRecipientUserId()),
 		)
-		return nil, fmt.Errorf("unable to run sql query: %v", err)
+		return nil, fmt.Errorf("unable to run sql query: %w", err)
 	}
 	defer rows.Close()
 
@@ -184,7 +185,7 @@ FROM latest_likes
 				zap.Error(err),
 				zap.String("recipientID", req.GetRecipientUserId()),
 			)
-			return nil, fmt.Errorf("unable to scan rows: %v", err)
+			return nil, fmt.Errorf("unable to scan rows: %w", err)
 		}
 
 		unixTimestamp := uint64(createdAt.Unix())
@@ -207,7 +208,7 @@ FROM latest_likes
 			zap.Error(err),
 			zap.String("recipientID", req.GetRecipientUserId()),
 		)
-		return nil, fmt.Errorf("row iteration error: %v", err)
+		return nil, fmt.Errorf("row iteration error: %w", err)
 	}
 
 	var nextToken string
@@ -228,7 +229,7 @@ FROM latest_likes
 				zap.Error(err),
 				zap.String("recipientID", req.GetRecipientUserId()),
 			)
-			return nil, fmt.Errorf("unable to get next token: %v", err)
+			return nil, fmt.Errorf("unable to get next token: %w", err)
 		}
 	}
 
@@ -276,17 +277,21 @@ func (p *Postgres) GetNewLikes(ctx context.Context, req *explorepb.ListLikedYouR
 	}
 
 	query := `
-	SELECT l.liker_id, l.created_at, l.id 
-	FROM likes l
-	WHERE l.liked_id = $1 AND decision = true
-	  AND NOT EXISTS (
-	    SELECT 1
-	    FROM likes l2
-	    WHERE l2.liker_id = $1
-	      AND l2.liked_id = l.liker_id
-	      AND l2.decision = true
-	  )
-`
+		SELECT l.liker_id, l.created_at, l.id 
+		FROM likes l
+		WHERE l.liked_id = $1 AND decision = true
+		AND created_at >= NOW() - INTERVAL '1 year'
+
+		AND NOT EXISTS (
+			SELECT 1
+			FROM likes l2
+			WHERE l2.liker_id = $1
+			AND l2.liked_id = l.liker_id
+			AND l2.decision = true
+			AND created_at >= NOW() - INTERVAL '1 year'
+
+		)
+	`
 
 	args := []interface{}{req.RecipientUserId}
 
@@ -315,7 +320,7 @@ func (p *Postgres) GetNewLikes(ctx context.Context, req *explorepb.ListLikedYouR
 			zap.Error(err),
 			zap.String("recipientID", req.GetRecipientUserId()),
 		)
-		return nil, fmt.Errorf("unable to run sql query: %v", err)
+		return nil, fmt.Errorf("unable to run sql query: %w", err)
 	}
 	defer rows.Close()
 
@@ -336,7 +341,7 @@ func (p *Postgres) GetNewLikes(ctx context.Context, req *explorepb.ListLikedYouR
 				zap.Error(err),
 				zap.String("recipientID", req.GetRecipientUserId()),
 			)
-			return nil, fmt.Errorf("unable to scan rows: %v", err)
+			return nil, fmt.Errorf("unable to scan rows: %w", err)
 		}
 
 		unixTimestamp := uint64(createdAt.Unix())
@@ -359,7 +364,7 @@ func (p *Postgres) GetNewLikes(ctx context.Context, req *explorepb.ListLikedYouR
 			zap.Error(err),
 			zap.String("recipientID", req.GetRecipientUserId()),
 		)
-		return nil, fmt.Errorf("row iteration error: %v", err)
+		return nil, fmt.Errorf("row iteration error: %w", err)
 	}
 
 	var nextToken string
@@ -379,7 +384,7 @@ func (p *Postgres) GetNewLikes(ctx context.Context, req *explorepb.ListLikedYouR
 				zap.Error(err),
 				zap.String("recipientID", req.GetRecipientUserId()),
 			)
-			return nil, fmt.Errorf("unable to get next token: %v", err)
+			return nil, fmt.Errorf("unable to get next token: %w", err)
 		}
 	}
 
@@ -406,16 +411,18 @@ func (p *Postgres) GetCountLikedYou(ctx context.Context, req *explorepb.CountLik
 	}()
 
 	query := `
-	SELECT COUNT(DISTINCT l.liker_id)
-    FROM likes l
-    WHERE l.liked_id = $1 AND decision
-    AND NOT EXISTS (
-    SELECT 1
-    FROM likes l2
-    WHERE l2.liker_id = $1
-      AND l2.liked_id = l.liker_id
-      AND l2.decision = true
-  )`
+		SELECT COUNT(DISTINCT l.liker_id)
+		FROM likes l
+		WHERE l.liked_id = $1 AND decision
+		AND NOT EXISTS (
+		SELECT 1
+		FROM likes l2
+		WHERE l2.liker_id = $1
+		AND l2.liked_id = l.liker_id
+		AND l2.decision = true
+		AND created_at >= NOW() - INTERVAL '1 year'
+
+	)`
 
 	var count int64
 	err = p.db.QueryRowContext(ctx, query, req.RecipientUserId).Scan(&count)
@@ -450,12 +457,12 @@ func (p *Postgres) PutDecision(ctx context.Context, req *explorepb.PutDecisionRe
 	}()
 
 	query := `
-		INSERT INTO likes (liker_id, liked_id, decision, decision_at, created_at)
-		VALUES ($1, $2, $3, NOW(), NOW())
-		ON CONFLICT (liker_id, liked_id)
-		DO UPDATE SET decision = EXCLUDED.decision, decision_at = EXCLUDED.decision_at
-		RETURNING decision
-		`
+			INSERT INTO likes (liker_id, liked_id, decision, decision_at, created_at)
+			VALUES ($1, $2, $3, NOW(), NOW())
+			ON CONFLICT (liker_id, liked_id)
+			DO UPDATE SET decision = EXCLUDED.decision, decision_at = EXCLUDED.decision_at
+			RETURNING decision
+			`
 
 	_, err = p.db.ExecContext(ctx, query, req.ActorUserId, req.RecipientUserId, req.LikedRecipient)
 	if err != nil {
@@ -466,7 +473,7 @@ func (p *Postgres) PutDecision(ctx context.Context, req *explorepb.PutDecisionRe
 			zap.String("recipientID", req.GetRecipientUserId()),
 			zap.String("actorID", req.GetActorUserId()),
 		)
-		return nil, fmt.Errorf("failed to insert or update like decision: %v", err)
+		return nil, fmt.Errorf("failed to insert or update like decision: %w", err)
 	}
 
 	p.logger.Info("put decision recorded",
@@ -479,11 +486,11 @@ func (p *Postgres) PutDecision(ctx context.Context, req *explorepb.PutDecisionRe
 	mutualLikes := false
 	if req.LikedRecipient {
 		checkMutualQuery := `
-		SELECT TRUE
-		FROM likes
-		WHERE liker_id = $1 AND liked_id = $2 AND decision
-		LIMIT 1
-	`
+			SELECT TRUE
+			FROM likes
+			WHERE liker_id = $1 AND liked_id = $2 AND decision
+			LIMIT 1
+		`
 		var exists bool
 		err := p.db.QueryRowContext(ctx, checkMutualQuery, req.ActorUserId, req.RecipientUserId).Scan(&exists)
 
@@ -504,7 +511,7 @@ func (p *Postgres) PutDecision(ctx context.Context, req *explorepb.PutDecisionRe
 				zap.String("recipientID", req.GetRecipientUserId()),
 				zap.String("actorID", req.GetActorUserId()),
 			)
-			return nil, fmt.Errorf("error checking for mutual like: %v", err)
+			return nil, fmt.Errorf("error checking for mutual like: %w", err)
 		}
 		mutualLikes = true
 		metrics.PutDecisionMutualLikesTotal.WithLabelValues("mutual_like").Inc()

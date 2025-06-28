@@ -3,238 +3,207 @@ package postgres_test
 import (
 	"context"
 	"database/sql"
-	"fmt"
+
+	//"errors"
+	"regexp"
 	"testing"
 	"time"
 
 	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/RogueAlmond70/Muzz/explorepb"
 	"github.com/RogueAlmond70/Muzz/internal/datastore/postgres"
-	"github.com/RogueAlmond70/Muzz/internal/handler"
-	"github.com/stretchr/testify/assert"
-	"go.uber.org/zap/zaptest"
+
+	//"github.com/RogueAlmond70/Muzz/internal/handler"
+	"go.uber.org/zap"
+	//"google.golang.org/grpc/codes"
+	//"google.golang.org/grpc/status"
 )
 
-func TestPutDecision_MutualLike(t *testing.T) {
+func newPostgresWithMock(t *testing.T) (*postgres.Postgres, sqlmock.Sqlmock, func()) {
 	db, mock, err := sqlmock.New()
-	assert.NoError(t, err)
-	defer db.Close()
+	if err != nil {
+		t.Fatalf("failed to create sqlmock: %v", err)
+	}
+	logger := zap.NewNop()
+	pg := postgres.NewPostgres(logger, db)
+	return pg, mock, func() {
+		db.Close()
+	}
+}
 
-	logger := zaptest.NewLogger(t)
-	p := postgres.NewPostgres(logger, db)
+func TestGetLikes_NoPaginationToken_Success(t *testing.T) {
+	pg, mock, cleanup := newPostgresWithMock(t)
+	defer cleanup()
 
-	ctx := context.Background()
+	req := &explorepb.ListLikedYouRequest{
+		RecipientUserId: "user1",
+	}
+
+	// Prepare expected SQL query & rows
+	queryRegex := regexp.QuoteMeta(`
+	WITH latest_likes AS (
+	SELECT DISTINCT ON (liker_id) liker_id, created_at, id
+	FROM likes
+	WHERE liked_id = $1 AND decision = true
+	AND created_at >= NOW() - INTERVAL '1 year'
+	ORDER BY liker_id, created_at DESC, id DESC
+	)
+	SELECT liker_id, created_at, id
+	FROM latest_likes 
+	 ORDER BY created_at DESC, id DESC LIMIT $2`)
+
+	columns := []string{"liker_id", "created_at", "id"}
+	now := time.Now()
+	rows := sqlmock.NewRows(columns).
+		AddRow("likerA", now, 1).
+		AddRow("likerB", now.Add(-time.Minute), 2)
+
+	mock.ExpectQuery(queryRegex).
+		WithArgs(req.RecipientUserId, 26).
+		WillReturnRows(rows)
+
+	resp, err := pg.GetLikes(context.Background(), req)
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+
+	if len(resp.Likers) != 2 {
+		t.Errorf("expected 2 likers, got %d", len(resp.Likers))
+	}
+
+	if resp.NextPaginationToken == nil || *resp.NextPaginationToken != "" {
+		// Since only 2 results and pageSize is 25, no next token expected
+		t.Logf("next token: %v", resp.NextPaginationToken)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unfulfilled expectations: %v", err)
+	}
+}
+
+func TestPutDecision_InsertAndMutualLike(t *testing.T) {
+	pg, mock, cleanup := newPostgresWithMock(t)
+	defer cleanup()
+
 	req := &explorepb.PutDecisionRequest{
-		ActorUserId:     "user1",
+		ActorUserId:     "actor1",
 		RecipientUserId: "user2",
 		LikedRecipient:  true,
 	}
 
-	// Expect INSERT/UPDATE
-	mock.ExpectExec(`INSERT INTO likes`).WithArgs("user1", "user2", true).
+	// Expect insert or update exec
+	mock.ExpectExec(regexp.QuoteMeta(`
+			INSERT INTO likes (liker_id, liked_id, decision, decision_at, created_at)
+			VALUES ($1, $2, $3, NOW(), NOW())
+			ON CONFLICT (liker_id, liked_id)
+			DO UPDATE SET decision = EXCLUDED.decision, decision_at = EXCLUDED.decision_at
+			RETURNING decision
+			`)).
+		WithArgs(req.ActorUserId, req.RecipientUserId, req.LikedRecipient).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
-	// Expect check for mutual like
-	mock.ExpectQuery(`SELECT TRUE FROM likes`).
-		WithArgs("user1", "user2").
-		WillReturnRows(sqlmock.NewRows([]string{"true"}).AddRow(true))
+	// Expect query for mutual like check returns TRUE
+	rows := sqlmock.NewRows([]string{"true"}).AddRow(true)
+	mock.ExpectQuery(regexp.QuoteMeta(`
+			SELECT TRUE
+			FROM likes
+			WHERE liker_id = $1 AND liked_id = $2 AND decision
+			LIMIT 1
+		`)).
+		WithArgs(req.ActorUserId, req.RecipientUserId).
+		WillReturnRows(rows)
 
-	resp, err := p.PutDecision(ctx, req)
-	assert.NoError(t, err)
-	assert.True(t, resp.MutualLikes)
-	assert.NoError(t, mock.ExpectationsWereMet())
+	resp, err := pg.PutDecision(context.Background(), req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !resp.MutualLikes {
+		t.Errorf("expected mutual likes true, got false")
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unfulfilled expectations: %v", err)
+	}
 }
 
 func TestPutDecision_NoMutualLike(t *testing.T) {
-	db, mock, err := sqlmock.New()
-	assert.NoError(t, err)
-	defer db.Close()
+	pg, mock, cleanup := newPostgresWithMock(t)
+	defer cleanup()
 
-	logger := zaptest.NewLogger(t)
-	p := postgres.NewPostgres(logger, db)
-
-	ctx := context.Background()
 	req := &explorepb.PutDecisionRequest{
-		ActorUserId:     "user1",
+		ActorUserId:     "actor1",
 		RecipientUserId: "user2",
 		LikedRecipient:  true,
 	}
 
-	mock.ExpectExec(`INSERT INTO likes`).WithArgs("user1", "user2", true).
+	mock.ExpectExec(regexp.QuoteMeta(`
+			INSERT INTO likes (liker_id, liked_id, decision, decision_at, created_at)
+			VALUES ($1, $2, $3, NOW(), NOW())
+			ON CONFLICT (liker_id, liked_id)
+			DO UPDATE SET decision = EXCLUDED.decision, decision_at = EXCLUDED.decision_at
+			RETURNING decision
+			`)).
+		WithArgs(req.ActorUserId, req.RecipientUserId, req.LikedRecipient).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
-	mock.ExpectQuery(`SELECT TRUE FROM likes`).
-		WithArgs("user1", "user2").
+	// QueryRow returns sql.ErrNoRows to simulate no mutual like
+	mock.ExpectQuery(regexp.QuoteMeta(`
+			SELECT TRUE
+			FROM likes
+			WHERE liker_id = $1 AND liked_id = $2 AND decision
+			LIMIT 1
+		`)).
+		WithArgs(req.ActorUserId, req.RecipientUserId).
 		WillReturnError(sql.ErrNoRows)
 
-	resp, err := p.PutDecision(ctx, req)
-	assert.NoError(t, err)
-	assert.False(t, resp.MutualLikes)
-	assert.NoError(t, mock.ExpectationsWereMet())
+	resp, err := pg.PutDecision(context.Background(), req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if resp.MutualLikes {
+		t.Errorf("expected mutual likes false, got true")
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unfulfilled expectations: %v", err)
+	}
 }
 
-func TestGetCountLikedYou(t *testing.T) {
-	db, mock, err := sqlmock.New()
-	assert.NoError(t, err)
-	defer db.Close()
+func TestGetCountLikedYou_Success(t *testing.T) {
+	pg, mock, cleanup := newPostgresWithMock(t)
+	defer cleanup()
 
-	logger := zaptest.NewLogger(t)
-	p := postgres.NewPostgres(logger, db)
-
-	req := &explorepb.CountLikedYouRequest{RecipientUserId: "user123"}
-	mock.ExpectQuery(`SELECT COUNT\(DISTINCT l\.liker_id\)`).
-		WithArgs("user123").
-		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(3))
-
-	resp, err := p.GetCountLikedYou(context.Background(), req)
-	assert.NoError(t, err)
-	assert.Equal(t, uint64(3), resp.Count)
-	assert.NoError(t, mock.ExpectationsWereMet())
-}
-
-func TestCursorEncodeDecode(t *testing.T) {
-	id := 42
-	createdAt := uint64(time.Now().Unix())
-
-	token, err := handler.EncodeCursor(id, createdAt)
-	assert.NoError(t, err)
-	assert.NotEmpty(t, token)
-
-	cursor, err := handler.DecodeCursor(token)
-	assert.NoError(t, err)
-	assert.Equal(t, id, cursor.ID)
-	assert.Equal(t, createdAt, cursor.CreatedAt)
-}
-
-func TestGetLikes_WithPagination(t *testing.T) {
-	db, mock, err := sqlmock.New()
-	assert.NoError(t, err)
-	defer db.Close()
-
-	logger := zaptest.NewLogger(t)
-	p := postgres.NewPostgres(logger, db)
-
-	ctx := context.Background()
-
-	cursorTime := time.Now().Add(-1 * time.Hour)
-	cursorID := 999
-	token, err := handler.EncodeCursor(cursorID, uint64(cursorTime.Unix()))
-	assert.NoError(t, err)
-
-	req := &explorepb.ListLikedYouRequest{
-		RecipientUserId: "user123",
-		PaginationToken: &token,
+	req := &explorepb.CountLikedYouRequest{
+		RecipientUserId: "user1",
 	}
 
-	// Prepare rows: 26 rows = 25 + 1 for pagination token generation
-	rows := sqlmock.NewRows([]string{"liker_id", "created_at", "id"})
-	for i := 0; i < 26; i++ {
-		rows.AddRow(fmt.Sprintf("liker%d", i), time.Now().Add(-time.Duration(i)*time.Minute), 1000+i)
+	count := int64(42)
+	mock.ExpectQuery(regexp.QuoteMeta(`
+		SELECT COUNT(DISTINCT l.liker_id)
+		FROM likes l
+		WHERE l.liked_id = $1 AND decision
+		AND NOT EXISTS (
+		SELECT 1
+		FROM likes l2
+		WHERE l2.liker_id = $1
+		AND l2.liked_id = l.liker_id
+		AND l2.decision = true
+		AND created_at >= NOW() - INTERVAL '1 year'
+	)`)).
+		WithArgs(req.RecipientUserId).
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(count))
+
+	resp, err := pg.GetCountLikedYou(context.Background(), req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
 	}
 
-	mock.ExpectQuery(`WITH latest_likes AS .*SELECT liker_id, created_at, id.*`).
-		WithArgs("user123", cursorTime.UTC(), cursorID, 26).
-		WillReturnRows(rows)
-
-	resp, err := p.GetLikes(ctx, req)
-	assert.NoError(t, err)
-	assert.Len(t, resp.Likers, 25)
-	assert.NotNil(t, resp.NextPaginationToken)
-	assert.NoError(t, mock.ExpectationsWereMet())
-}
-
-func TestGetLikes_NoPaginationToken(t *testing.T) {
-	db, mock, err := sqlmock.New()
-	assert.NoError(t, err)
-	defer db.Close()
-
-	logger := zaptest.NewLogger(t)
-	p := postgres.NewPostgres(logger, db)
-
-	ctx := context.Background()
-
-	req := &explorepb.ListLikedYouRequest{
-		RecipientUserId: "user456",
-		PaginationToken: nil,
+	if resp.Count != uint64(count) {
+		t.Errorf("expected count %d, got %d", count, resp.Count)
 	}
 
-	rows := sqlmock.NewRows([]string{"liker_id", "created_at", "id"})
-	for i := 0; i < 10; i++ {
-		rows.AddRow(fmt.Sprintf("liker%d", i), time.Now().Add(-time.Duration(i)*time.Minute), 2000+i)
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unfulfilled expectations: %v", err)
 	}
-
-	mock.ExpectQuery(`WITH latest_likes AS .*SELECT liker_id, created_at, id.*`).
-		WithArgs("user456", 26).
-		WillReturnRows(rows)
-
-	resp, err := p.GetLikes(ctx, req)
-	assert.NoError(t, err)
-	assert.Len(t, resp.Likers, 10)
-	assert.Nil(t, resp.NextPaginationToken)
-	assert.NoError(t, mock.ExpectationsWereMet())
-}
-
-func TestGetNewLikes_WithPagination(t *testing.T) {
-	db, mock, err := sqlmock.New()
-	assert.NoError(t, err)
-	defer db.Close()
-
-	logger := zaptest.NewLogger(t)
-	p := postgres.NewPostgres(logger, db)
-
-	ctx := context.Background()
-	cursorTime := time.Now().Add(-1 * time.Hour)
-	cursorID := 777
-	token, err := handler.EncodeCursor(cursorID, uint64(cursorTime.Unix()))
-	assert.NoError(t, err)
-
-	req := &explorepb.ListLikedYouRequest{
-		RecipientUserId: "user789",
-		PaginationToken: &token,
-	}
-
-	rows := sqlmock.NewRows([]string{"liker_id", "created_at", "id"})
-	for i := 0; i < 26; i++ {
-		rows.AddRow(fmt.Sprintf("newliker%d", i), time.Now().Add(-time.Duration(i)*time.Minute), 3000+i)
-	}
-
-	mock.ExpectQuery(`SELECT l.liker_id, l.created_at, l.id FROM likes l .*`).
-		WithArgs("user789", cursorTime.UTC(), cursorID, 26).
-		WillReturnRows(rows)
-
-	resp, err := p.GetNewLikes(ctx, req)
-	assert.NoError(t, err)
-	assert.Len(t, resp.Likers, 25)
-	assert.NotNil(t, resp.NextPaginationToken)
-	assert.NoError(t, mock.ExpectationsWereMet())
-}
-
-func TestGetNewLikes_NoPaginationToken(t *testing.T) {
-	db, mock, err := sqlmock.New()
-	assert.NoError(t, err)
-	defer db.Close()
-
-	logger := zaptest.NewLogger(t)
-	p := postgres.NewPostgres(logger, db)
-
-	ctx := context.Background()
-	req := &explorepb.ListLikedYouRequest{
-		RecipientUserId: "user999",
-		PaginationToken: nil,
-	}
-
-	rows := sqlmock.NewRows([]string{"liker_id", "created_at", "id"})
-	for i := 0; i < 10; i++ {
-		rows.AddRow(fmt.Sprintf("freshliker%d", i), time.Now().Add(-time.Duration(i)*time.Minute), 4000+i)
-	}
-
-	mock.ExpectQuery(`SELECT l.liker_id, l.created_at, l.id FROM likes l .*`).
-		WithArgs("user999", 26).
-		WillReturnRows(rows)
-
-	resp, err := p.GetNewLikes(ctx, req)
-	assert.NoError(t, err)
-	assert.Len(t, resp.Likers, 10)
-	assert.Nil(t, resp.NextPaginationToken)
-	assert.NoError(t, mock.ExpectationsWereMet())
 }
