@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"os"
 	"time"
 
 	"github.com/RogueAlmond70/Muzz/explorepb"
@@ -32,8 +33,36 @@ func NewPostgres(logger *zap.Logger, sqldb *sql.DB) *Postgres {
 	}
 }
 
+func getPostgresConnStr() string {
+	host := os.Getenv("POSTGRES_HOST")
+	if host == "" {
+		host = "localhost" // default for local runs
+	}
+	port := os.Getenv("POSTGRES_PORT")
+	if port == "" {
+		port = "5432"
+	}
+	user := os.Getenv("POSTGRES_USER")
+	if user == "" {
+		user = "postgres"
+	}
+	password := os.Getenv("POSTGRES_PASSWORD")
+	if password == "" {
+		password = "password"
+	}
+	dbname := os.Getenv("POSTGRES_DB")
+	if dbname == "" {
+		dbname = "myappdb"
+	}
+
+	return fmt.Sprintf(
+		"postgres://%s:%s@%s:%s/%s?sslmode=disable",
+		user, password, host, port, dbname,
+	)
+}
+
 func ConnectDB() (*sql.DB, error) {
-	connStr := "postgres://postgres:password@localhost:5432/myappdb?sslmode=disable"
+	connStr := getPostgresConnStr()
 	db, err := sql.Open("postgres", connStr)
 	if err != nil {
 		return nil, fmt.Errorf("error connecting to database: %v", err)
@@ -42,6 +71,20 @@ func ConnectDB() (*sql.DB, error) {
 		return nil, fmt.Errorf("error checking database connection: %v", err)
 	}
 	return db, nil
+}
+
+func ConnectDBWithRetry(maxRetries int, delay time.Duration) (*sql.DB, error) {
+	var db *sql.DB
+	var err error
+	for i := 0; i < maxRetries; i++ {
+		db, err = ConnectDB()
+		if err == nil {
+			return db, nil
+		}
+		fmt.Printf("Failed to connect to DB (attempt %d/%d): %v\n", i+1, maxRetries, err)
+		time.Sleep(delay)
+	}
+	return nil, fmt.Errorf("failed to connect to database after %d attempts: %v", maxRetries, err)
 }
 
 func (p *Postgres) GetLikes(ctx context.Context, req *explorepb.ListLikedYouRequest) (*explorepb.ListLikedYouResponse, error) {

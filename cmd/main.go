@@ -2,10 +2,12 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"net"
 	"net/http"
 	"os"
+	"time"
 
 	"github.com/RogueAlmond70/Muzz/explorepb"
 	"github.com/RogueAlmond70/Muzz/internal/datastore/postgres"
@@ -28,10 +30,11 @@ func main() {
 	}
 	defer zlog.Sync()
 
+	redisAddr := getRedisAddr()
 	redisClient := redis.NewClient(&redis.Options{
-		Addr:     "localhost:6379", // or use REDIS_URL env var for Docker/cloud
-		Password: "",               // set if needed
-		DB:       0,                // use default DB
+		Addr:     redisAddr, // or use REDIS_URL env var for Docker/cloud
+		Password: "",        // set if needed
+		DB:       0,         // use default DB
 	})
 	// Check the connection.
 	if err := redisClient.Ping(ctx).Err(); err != nil {
@@ -40,9 +43,10 @@ func main() {
 	}
 
 	// Create a postgres instance.
-	db, err := postgres.ConnectDB()
+	db, err := postgres.ConnectDBWithRetry(10, 2*time.Second)
 	if err != nil {
-		log.Fatalf("failed to connect to database: %v", err)
+		zlog.Error("could not connect to DB", zap.Error(err))
+		os.Exit(1)
 	}
 
 	// Create our postgres client.
@@ -65,7 +69,7 @@ func main() {
 			zlog.Error("Metrics server failed", zap.Error(err))
 		}
 	}()
-	
+
 	// Set up our grpc server.
 	lis, err := net.Listen("tcp", ":9001")
 	if err != nil {
@@ -79,4 +83,16 @@ func main() {
 	if err := grpcServer.Serve(lis); err != nil {
 		log.Fatalf("failed to serve: %s", err)
 	}
+}
+
+func getRedisAddr() string {
+	host := os.Getenv("REDIS_HOST")
+	if host == "" {
+		host = "localhost" // default for local runs
+	}
+	port := os.Getenv("REDIS_PORT")
+	if port == "" {
+		port = "6379"
+	}
+	return fmt.Sprintf("%s:%s", host, port)
 }
