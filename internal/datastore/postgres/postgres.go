@@ -44,11 +44,20 @@ func ConnectDB() (*sql.DB, error) {
 	return db, nil
 }
 
-// This will be called by ListLikedYou, and needs to be called repeatedly o as not to overwhelm device
 func (p *Postgres) GetLikes(ctx context.Context, req *explorepb.ListLikedYouRequest) (*explorepb.ListLikedYouResponse, error) {
 	timer := prometheus.NewTimer(metrics.ListLikedYouRequestDurationSeconds)
-	defer timer.ObserveDuration()
 	metrics.ListLikedYouRequestsTotal.WithLabelValues().Inc()
+
+	defer func() { // If performance is slow for some reason, it should be logged.
+		elapsed := timer.ObserveDuration()
+		if elapsed > 500*time.Millisecond {
+			p.logger.Warn("slow query detected (>500ms)",
+				zap.Duration("duration", elapsed),
+				zap.String("method", "GetLikes"),
+				zap.String("recipientID", req.RecipientUserId),
+			)
+		}
+	}()
 
 	const pageSize = 25
 
@@ -59,7 +68,13 @@ func (p *Postgres) GetLikes(ctx context.Context, req *explorepb.ListLikedYouRequ
 	if req.PaginationToken != nil && *req.PaginationToken != "" {
 		cursor, err := handler.DecodeCursor(*req.PaginationToken)
 		if err != nil {
-			p.logger.Error("error decoding cursor: err", zap.Error(err))
+			p.logger.Error("unable to decode cursor",
+				zap.String("pagination_token", req.GetPaginationToken()),
+				zap.Error(err),
+				zap.String("operation_name", "ListLikedYou"),
+				zap.String("recipientID", req.GetRecipientUserId()),
+			)
+
 			return nil, status.Errorf(codes.InvalidArgument, "invalid pagination token")
 		}
 		afterCreatedAt = time.Unix(int64(cursor.CreatedAt), 0)
@@ -81,6 +96,13 @@ FROM latest_likes
 	args := []interface{}{req.RecipientUserId}
 
 	if hasCursor {
+		p.logger.Debug("incoming pagination cursor",
+			zap.String("operation_name", "ListLikedYou"),
+			zap.String("recipientID", req.GetRecipientUserId()),
+			zap.Time("after_created_at", afterCreatedAt),
+			zap.Int("after_id", afterID),
+		)
+
 		query += " WHERE (created_at, id) < ($2, $3)"
 		args = append(args, afterCreatedAt.UTC(), afterID)
 		query += " ORDER BY created_at DESC, id DESC LIMIT $4"
@@ -93,7 +115,11 @@ FROM latest_likes
 	rows, err := p.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		metrics.ListLikedYouRequestErrorsTotal.WithLabelValues("sql_query_error").Inc()
-		p.logger.Error("unable to run sql query", zap.Error(err))
+		p.logger.Error("unable to run sql query",
+			zap.String("operation_name", "ListLikedYou"),
+			zap.Error(err),
+			zap.String("recipientID", req.GetRecipientUserId()),
+		)
 		return nil, fmt.Errorf("unable to run sql query: %v", err)
 	}
 	defer rows.Close()
@@ -110,7 +136,11 @@ FROM latest_likes
 
 		if err := rows.Scan(&likerID, &createdAt, &id); err != nil {
 			metrics.ListLikedYouRequestErrorsTotal.WithLabelValues("scan_error").Inc()
-			p.logger.Error("unable to scan rows", zap.Error(err))
+			p.logger.Error("unable to scan rows",
+				zap.String("operation_name", "ListLikedYou"),
+				zap.Error(err),
+				zap.String("recipientID", req.GetRecipientUserId()),
+			)
 			return nil, fmt.Errorf("unable to scan rows: %v", err)
 		}
 
@@ -129,16 +159,32 @@ FROM latest_likes
 	// Checking for any iteration related errors, connection issues etc
 	if err := rows.Err(); err != nil {
 		metrics.ListLikedYouRequestErrorsTotal.WithLabelValues("row_iteration_error").Inc()
-		p.logger.Error("row iteration error", zap.Error(err))
+		p.logger.Error("row iteration error",
+			zap.String("operation_name", "ListLikedYou"),
+			zap.Error(err),
+			zap.String("recipientID", req.GetRecipientUserId()),
+		)
 		return nil, fmt.Errorf("row iteration error: %v", err)
 	}
 
 	var nextToken string
 	if nextCursor != nil {
 		nextToken, err = handler.EncodeCursor(nextCursor.ID, nextCursor.CreatedAt)
+		p.logger.Debug("next pagination cursor set",
+			zap.String("operation_name", "ListLikedYou"),
+			zap.String("recipientID", req.GetRecipientUserId()),
+			zap.Uint64("next_cursor_created_at", nextCursor.CreatedAt),
+			zap.Int("next_cursor_id", nextCursor.ID),
+			zap.String("next token", nextToken),
+		)
+
 		if err != nil {
 			metrics.ListLikedYouRequestErrorsTotal.WithLabelValues("cursor_encoding_error").Inc()
-			p.logger.Error("unable to get next token", zap.Error(err))
+			p.logger.Error("unable to encode cursor for next token",
+				zap.String("operation_name", "ListLikedYou"),
+				zap.Error(err),
+				zap.String("recipientID", req.GetRecipientUserId()),
+			)
 			return nil, fmt.Errorf("unable to get next token: %v", err)
 		}
 	}
@@ -152,8 +198,18 @@ FROM latest_likes
 // List all users who liked the recipient excluding those who have been liked in return
 func (p *Postgres) GetNewLikes(ctx context.Context, req *explorepb.ListLikedYouRequest) (resp *explorepb.ListLikedYouResponse, err error) {
 	timer := prometheus.NewTimer(metrics.ListNewLikedYouRequestDurationSeconds)
-	defer timer.ObserveDuration()
 	metrics.ListNewLikedYouRequestsTotal.WithLabelValues().Inc()
+
+	defer func() { // If performance is slow for some reason, it should be logged.
+		elapsed := timer.ObserveDuration()
+		if elapsed > 500*time.Millisecond {
+			p.logger.Warn("slow query detected (>500ms)",
+				zap.Duration("duration", elapsed),
+				zap.String("method", "GetNewLikes"),
+				zap.String("recipientID", req.RecipientUserId),
+			)
+		}
+	}()
 
 	const pageSize = 25
 
@@ -164,7 +220,11 @@ func (p *Postgres) GetNewLikes(ctx context.Context, req *explorepb.ListLikedYouR
 	if req.PaginationToken != nil && *req.PaginationToken != "" {
 		cursor, err := handler.DecodeCursor(*req.PaginationToken)
 		if err != nil {
-			p.logger.Error("unable to decode cursor", zap.Error(err))
+			p.logger.Error("unable to decode cursor",
+				zap.String("pagination_token", req.GetPaginationToken()),
+				zap.Error(err),
+				zap.String("recipient", req.GetRecipientUserId()),
+			)
 			return nil, status.Errorf(codes.InvalidArgument, "invalid pagination token")
 		}
 		afterCreatedAt = time.Unix(int64(cursor.CreatedAt), 0)
@@ -188,6 +248,13 @@ func (p *Postgres) GetNewLikes(ctx context.Context, req *explorepb.ListLikedYouR
 	args := []interface{}{req.RecipientUserId}
 
 	if hasCursor {
+		p.logger.Debug("incoming pagination cursor",
+			zap.String("operation_name", "ListNewLikedYou"),
+			zap.String("recipientID", req.GetRecipientUserId()),
+			zap.Time("after_created_at", afterCreatedAt),
+			zap.Int("after_id", afterID),
+		)
+
 		query += " AND (l.created_at, l.id) < ($2, $3)"
 		args = append(args, afterCreatedAt.UTC(), afterID)
 		query += " ORDER BY l.created_at DESC, l.id DESC LIMIT $4"
@@ -200,7 +267,11 @@ func (p *Postgres) GetNewLikes(ctx context.Context, req *explorepb.ListLikedYouR
 	rows, err := p.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		metrics.ListNewLikedYouRequestErrorsTotal.WithLabelValues("sql_query_error").Inc()
-		p.logger.Error("unable to run sql query", zap.Error(err))
+		p.logger.Error("unable to run sql query",
+			zap.String("operation_name", "ListNewLikedYou"),
+			zap.Error(err),
+			zap.String("recipientID", req.GetRecipientUserId()),
+		)
 		return nil, fmt.Errorf("unable to run sql query: %v", err)
 	}
 	defer rows.Close()
@@ -217,7 +288,11 @@ func (p *Postgres) GetNewLikes(ctx context.Context, req *explorepb.ListLikedYouR
 
 		if err := rows.Scan(&likerID, &createdAt, &id); err != nil {
 			metrics.ListNewLikedYouRequestErrorsTotal.WithLabelValues("scan_error").Inc()
-			p.logger.Error("unable to scan rows", zap.Error(err))
+			p.logger.Error("unable to scan rows",
+				zap.String("operation_name", "ListNewLikedYou"),
+				zap.Error(err),
+				zap.String("recipientID", req.GetRecipientUserId()),
+			)
 			return nil, fmt.Errorf("unable to scan rows: %v", err)
 		}
 
@@ -236,14 +311,31 @@ func (p *Postgres) GetNewLikes(ctx context.Context, req *explorepb.ListLikedYouR
 	// Checking for any iteration related errors, connection issues etc
 	if err := rows.Err(); err != nil {
 		metrics.ListNewLikedYouRequestErrorsTotal.WithLabelValues("row_iteration_error").Inc()
+		p.logger.Error("row iteration error",
+			zap.String("operation_name", "ListNewLikedYou"),
+			zap.Error(err),
+			zap.String("recipientID", req.GetRecipientUserId()),
+		)
 		return nil, fmt.Errorf("row iteration error: %v", err)
 	}
 
 	var nextToken string
 	if nextCursor != nil {
 		nextToken, err = handler.EncodeCursor(nextCursor.ID, nextCursor.CreatedAt)
+		p.logger.Debug("next pagination cursor set",
+			zap.String("operation_name", "ListNewLikedYou"),
+			zap.String("recipientID", req.GetRecipientUserId()),
+			zap.Uint64("next_cursor_created_at", nextCursor.CreatedAt),
+			zap.Int("next_cursor_id", nextCursor.ID),
+			zap.String("next token", nextToken),
+		)
 		if err != nil {
 			metrics.ListNewLikedYouRequestErrorsTotal.WithLabelValues("cursor_encoding_error").Inc()
+			p.logger.Error("unable to encode cursor for next token",
+				zap.String("operation_name", "ListLikedYou"),
+				zap.Error(err),
+				zap.String("recipientID", req.GetRecipientUserId()),
+			)
 			return nil, fmt.Errorf("unable to get next token: %v", err)
 		}
 	}
@@ -258,7 +350,17 @@ func (p *Postgres) GetNewLikes(ctx context.Context, req *explorepb.ListLikedYouR
 func (p *Postgres) GetCountLikedYou(ctx context.Context, req *explorepb.CountLikedYouRequest) (resp *explorepb.CountLikedYouResponse, err error) {
 	timer := prometheus.NewTimer(metrics.CountLikedYouRequestDurationSeconds)
 	metrics.CountLikedYouRequestsTotal.WithLabelValues().Inc()
-	defer timer.ObserveDuration()
+
+	defer func() {
+		elapsed := timer.ObserveDuration() // If performance is slow for some reason, it should be logged.
+		if elapsed > 500*time.Millisecond {
+			p.logger.Warn("slow query detected (>500ms)",
+				zap.Duration("duration", elapsed),
+				zap.String("method", "GetCountLikedYou"),
+				zap.String("recipientID", req.RecipientUserId),
+			)
+		}
+	}()
 
 	query := `
 	SELECT COUNT(DISTINCT l.liker_id)
@@ -276,8 +378,12 @@ func (p *Postgres) GetCountLikedYou(ctx context.Context, req *explorepb.CountLik
 	err = p.db.QueryRowContext(ctx, query, req.RecipientUserId).Scan(&count)
 	if err != nil {
 		metrics.ListNewLikedYouRequestErrorsTotal.WithLabelValues("sql_query_error").Inc()
-		// Prometheus metrics here
-		return nil, fmt.Errorf("unable to query count: %w", err)
+		p.logger.Error("unable to run sql query",
+			zap.String("operation_name", "CountLikedYou"),
+			zap.Error(err),
+			zap.String("recipientID", req.GetRecipientUserId()),
+		)
+		return nil, fmt.Errorf("unable to run count likes query: %w", err)
 	}
 
 	return &explorepb.CountLikedYouResponse{Count: uint64(count)}, nil
@@ -287,8 +393,18 @@ func (p *Postgres) GetCountLikedYou(ctx context.Context, req *explorepb.CountLik
 // Record the decision of the actor to like or pass the recipient
 func (p *Postgres) PutDecision(ctx context.Context, req *explorepb.PutDecisionRequest) (resp *explorepb.PutDecisionResponse, err error) {
 	timer := prometheus.NewTimer(metrics.PutDecisionRequestDurationSeconds)
-	defer timer.ObserveDuration()
-	metrics.PutDecisionRequestsTotal.WithLabelValues().Inc()
+	metrics.PutDecisionRequestsTotal.WithLabelValues("request").Inc()
+
+	defer func() {
+		elapsed := timer.ObserveDuration() // If performance is slow for some reason, it should be logged.
+		if elapsed > 500*time.Millisecond {
+			p.logger.Warn("slow query detected (>500ms)",
+				zap.Duration("duration", elapsed),
+				zap.String("method", "PutDecision"),
+				zap.String("recipientID", req.RecipientUserId),
+			)
+		}
+	}()
 
 	query := `
 		INSERT INTO likes (liker_id, liked_id, decision, decision_at, created_at)
@@ -301,32 +417,58 @@ func (p *Postgres) PutDecision(ctx context.Context, req *explorepb.PutDecisionRe
 	_, err = p.db.ExecContext(ctx, query, req.ActorUserId, req.RecipientUserId, req.LikedRecipient)
 	if err != nil {
 		metrics.PutDecisionRequestErrorsTotal.WithLabelValues("insert_update_error").Inc()
+		p.logger.Error("unable to run sql query",
+			zap.String("operation_name", "PutDecision"),
+			zap.Error(err),
+			zap.String("recipientID", req.GetRecipientUserId()),
+			zap.String("actorID", req.GetActorUserId()),
+		)
 		return nil, fmt.Errorf("failed to insert or update like decision: %v", err)
 	}
+
+	p.logger.Info("put decision recorded",
+		zap.String("recipientID", req.GetRecipientUserId()),
+		zap.String("actorID", req.GetActorUserId()),
+		zap.Bool("liked_recipient", req.GetLikedRecipient()),
+	)
 
 	// Check for mutual like only if this user liked the recipient
 	mutualLikes := false
 	if req.LikedRecipient {
 		checkMutualQuery := `
-			SELECT TRUE
-			FROM likes
-			WHERE liker_id = $2 AND liked_id = $1 AND decision = TRUE
-			LIMIT 1
-		`
+		SELECT TRUE
+		FROM likes
+		WHERE liker_id = $1 AND liked_id = $2 AND decision = TRUE
+		LIMIT 1
+	`
 		var exists bool
 		err := p.db.QueryRowContext(ctx, checkMutualQuery, req.ActorUserId, req.RecipientUserId).Scan(&exists)
 
 		if errors.Is(err, sql.ErrNoRows) { // No Rows is not necesarily an error, but it does mean there is no mutual like.
 			metrics.PutDecisionNoMutualLikesTotal.WithLabelValues("no_mutual_like").Inc()
+			p.logger.Info("no mutual like",
+				zap.String("recipientID", req.GetRecipientUserId()),
+				zap.String("actorID", req.GetActorUserId()),
+			)
 			return &explorepb.PutDecisionResponse{
 				MutualLikes: false,
 			}, nil
 		} else if err != nil {
 			metrics.PutDecisionRequestErrorsTotal.WithLabelValues("general_error").Inc()
+			p.logger.Error("unable to run sql query",
+				zap.String("operation_name", "PutDecision"),
+				zap.Error(err),
+				zap.String("recipientID", req.GetRecipientUserId()),
+				zap.String("actorID", req.GetActorUserId()),
+			)
 			return nil, fmt.Errorf("error checking for mutual like: %v", err)
 		}
 		mutualLikes = true
-		metrics.PutDecisionMutualLikesTotal.WithLabelValues().Inc()
+		metrics.PutDecisionMutualLikesTotal.WithLabelValues("mutual_like").Inc()
+		p.logger.Info("mutual like!",
+			zap.String("recipientID", req.GetRecipientUserId()),
+			zap.String("actorID", req.GetActorUserId()),
+		)
 	}
 	return &explorepb.PutDecisionResponse{
 		MutualLikes: mutualLikes,

@@ -7,8 +7,6 @@ import (
 	"fmt"
 	"time"
 
-	"log"
-
 	pb "github.com/RogueAlmond70/Muzz/explorepb"
 	"github.com/RogueAlmond70/Muzz/internal/datastore"
 	redis_cache "github.com/RogueAlmond70/Muzz/internal/datastore/redis"
@@ -32,7 +30,6 @@ func (s Server) ListLikedYou(ctx context.Context, req *pb.ListLikedYouRequest) (
 	} else {
 		cursor, err := DecodeCursor(*req.PaginationToken)
 		if err != nil {
-			log.Printf("Invalid cursor: %v", err)
 			return nil, status.Error(codes.InvalidArgument, "invalid cursor")
 		}
 		cacheKey = fmt.Sprintf("explore:likes:%s:page:after:%d_%d", req.RecipientUserId, cursor.CreatedAt, cursor.ID)
@@ -50,7 +47,6 @@ func (s Server) ListLikedYou(ctx context.Context, req *pb.ListLikedYouRequest) (
 	// Querying the database when there is no cached result.
 	response, err := s.DB.GetLikes(ctx, req)
 	if err != nil {
-		log.Printf("Unable to get likes: %v. Please try again later", err)
 		return nil, fmt.Errorf("unable to get likes: %v", err)
 	}
 
@@ -72,7 +68,6 @@ func (s Server) ListNewLikedYou(ctx context.Context, req *pb.ListLikedYouRequest
 	} else {
 		cursor, err := DecodeCursor(*req.PaginationToken)
 		if err != nil {
-			log.Printf("Invalid cursor: %v", err)
 			return nil, status.Error(codes.InvalidArgument, "invalid cursor")
 		}
 		cacheKey = fmt.Sprintf("explore:likes:%s:page:after:%d_%d", req.RecipientUserId, cursor.CreatedAt, cursor.ID)
@@ -89,7 +84,6 @@ func (s Server) ListNewLikedYou(ctx context.Context, req *pb.ListLikedYouRequest
 
 	response, err := s.DB.GetNewLikes(ctx, req)
 	if err != nil {
-		log.Printf("Unable to get new likes: %v. Please try again later.", err)
 		return nil, fmt.Errorf("unable to get new likes: %v", err)
 	}
 
@@ -116,7 +110,6 @@ func (s Server) CountLikedYou(ctx context.Context, req *pb.CountLikedYouRequest)
 	// Query the database if nothing is cached for this request.
 	response, err := s.DB.GetCountLikedYou(ctx, req)
 	if err != nil {
-		log.Printf("Unable to get count of likes: %v. Please try again later.", err)
 		return nil, fmt.Errorf("unable to get count of likes: %v", err)
 	}
 
@@ -142,7 +135,6 @@ func (s Server) PutDecision(ctx context.Context, req *pb.PutDecisionRequest) (*p
 	// Query the database if nothing is cached for this request.
 	response, err := s.DB.PutDecision(ctx, req)
 	if err != nil {
-		log.Printf("Unable to set decision request: %v. Please try again later.", err)
 		return nil, fmt.Errorf("unable to set decision request: %v", err)
 	}
 
