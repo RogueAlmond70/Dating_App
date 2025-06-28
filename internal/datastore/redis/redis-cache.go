@@ -7,7 +7,7 @@ import (
 	redis "github.com/redis/go-redis/v9"
 )
 
-const ExploreTTL = 30 * time.Second // TTL can probably be 30 seconds without impacting user experience, though this value should be the same across endpoints.
+const ExploreTTL = 1 * time.Second // TTL can probably be 30 seconds without impacting user experience, though this value should be the same across endpoints.
 
 // In the real world we could have some kind of detailed caching policy, but for the sake of simplicity we will go with
 // a single ttl value.

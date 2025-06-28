@@ -86,7 +86,7 @@ func (p *Postgres) GetLikes(ctx context.Context, req *explorepb.ListLikedYouRequ
 WITH latest_likes AS (
   SELECT DISTINCT ON (liker_id) liker_id, created_at, id
   FROM likes
-  WHERE liked_id = $1
+  WHERE liked_id = $1 AND decision = true
   ORDER BY liker_id, created_at DESC, id DESC
 )
 SELECT liker_id, created_at, id
@@ -233,9 +233,9 @@ func (p *Postgres) GetNewLikes(ctx context.Context, req *explorepb.ListLikedYouR
 	}
 
 	query := `
-	SELECT l.liker_id, l.created_at, l.id
+	SELECT l.liker_id, l.created_at, l.id 
 	FROM likes l
-	WHERE l.liked_id = $1
+	WHERE l.liked_id = $1 AND decision = true
 	  AND NOT EXISTS (
 	    SELECT 1
 	    FROM likes l2
@@ -365,7 +365,7 @@ func (p *Postgres) GetCountLikedYou(ctx context.Context, req *explorepb.CountLik
 	query := `
 	SELECT COUNT(DISTINCT l.liker_id)
     FROM likes l
-    WHERE l.liked_id = $1
+    WHERE l.liked_id = $1 AND decision
     AND NOT EXISTS (
     SELECT 1
     FROM likes l2
@@ -438,7 +438,7 @@ func (p *Postgres) PutDecision(ctx context.Context, req *explorepb.PutDecisionRe
 		checkMutualQuery := `
 		SELECT TRUE
 		FROM likes
-		WHERE liker_id = $1 AND liked_id = $2 AND decision = TRUE
+		WHERE liker_id = $1 AND liked_id = $2 AND decision
 		LIMIT 1
 	`
 		var exists bool
