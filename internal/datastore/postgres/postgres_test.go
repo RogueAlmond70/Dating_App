@@ -3,13 +3,14 @@ package postgres_test
 import (
 	"context"
 	"database/sql"
-	"errors"
+	"fmt"
 	"testing"
 	"time"
 
 	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/RogueAlmond70/Muzz/explorepb"
-	"github.com/RogueAlmond70/Muzz/internal/database/postgres"
+	"github.com/RogueAlmond70/Muzz/internal/datastore/postgres"
+	"github.com/RogueAlmond70/Muzz/internal/handler"
 	"github.com/stretchr/testify/assert"
 	"go.uber.org/zap/zaptest"
 )
@@ -20,7 +21,7 @@ func TestPutDecision_MutualLike(t *testing.T) {
 	defer db.Close()
 
 	logger := zaptest.NewLogger(t)
-	p := postgres.NewPostgres(*logger, db)
+	p := postgres.NewPostgres(logger, db)
 
 	ctx := context.Background()
 	req := &explorepb.PutDecisionRequest{
@@ -50,7 +51,7 @@ func TestPutDecision_NoMutualLike(t *testing.T) {
 	defer db.Close()
 
 	logger := zaptest.NewLogger(t)
-	p := postgres.NewPostgres(*logger, db)
+	p := postgres.NewPostgres(logger, db)
 
 	ctx := context.Background()
 	req := &explorepb.PutDecisionRequest{
@@ -78,7 +79,7 @@ func TestGetCountLikedYou(t *testing.T) {
 	defer db.Close()
 
 	logger := zaptest.NewLogger(t)
-	p := postgres.NewPostgres(*logger, db)
+	p := postgres.NewPostgres(logger, db)
 
 	req := &explorepb.CountLikedYouRequest{RecipientUserId: "user123"}
 	mock.ExpectQuery(`SELECT COUNT\(DISTINCT l\.liker_id\)`).
@@ -95,11 +96,11 @@ func TestCursorEncodeDecode(t *testing.T) {
 	id := 42
 	createdAt := uint64(time.Now().Unix())
 
-	token, err := postgres.EncodeCursor(id, createdAt)
+	token, err := handler.EncodeCursor(id, createdAt)
 	assert.NoError(t, err)
 	assert.NotEmpty(t, token)
 
-	cursor, err := postgres.DecodeCursor(token)
+	cursor, err := handler.DecodeCursor(token)
 	assert.NoError(t, err)
 	assert.Equal(t, id, cursor.ID)
 	assert.Equal(t, createdAt, cursor.CreatedAt)
@@ -111,13 +112,13 @@ func TestGetLikes_WithPagination(t *testing.T) {
 	defer db.Close()
 
 	logger := zaptest.NewLogger(t)
-	p := postgres.NewPostgres(*logger, db)
+	p := postgres.NewPostgres(logger, db)
 
 	ctx := context.Background()
 
 	cursorTime := time.Now().Add(-1 * time.Hour)
 	cursorID := 999
-	token, err := postgres.EncodeCursor(cursorID, uint64(cursorTime.Unix()))
+	token, err := handler.EncodeCursor(cursorID, uint64(cursorTime.Unix()))
 	assert.NoError(t, err)
 
 	req := &explorepb.ListLikedYouRequest{
@@ -148,7 +149,7 @@ func TestGetLikes_NoPaginationToken(t *testing.T) {
 	defer db.Close()
 
 	logger := zaptest.NewLogger(t)
-	p := postgres.NewPostgres(*logger, db)
+	p := postgres.NewPostgres(logger, db)
 
 	ctx := context.Background()
 
@@ -179,12 +180,12 @@ func TestGetNewLikes_WithPagination(t *testing.T) {
 	defer db.Close()
 
 	logger := zaptest.NewLogger(t)
-	p := postgres.NewPostgres(*logger, db)
+	p := postgres.NewPostgres(logger, db)
 
 	ctx := context.Background()
 	cursorTime := time.Now().Add(-1 * time.Hour)
 	cursorID := 777
-	token, err := postgres.EncodeCursor(cursorID, uint64(cursorTime.Unix()))
+	token, err := handler.EncodeCursor(cursorID, uint64(cursorTime.Unix()))
 	assert.NoError(t, err)
 
 	req := &explorepb.ListLikedYouRequest{
@@ -214,7 +215,7 @@ func TestGetNewLikes_NoPaginationToken(t *testing.T) {
 	defer db.Close()
 
 	logger := zaptest.NewLogger(t)
-	p := postgres.NewPostgres(*logger, db)
+	p := postgres.NewPostgres(logger, db)
 
 	ctx := context.Background()
 	req := &explorepb.ListLikedYouRequest{

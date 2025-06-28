@@ -3,14 +3,13 @@ package postgres
 import (
 	"context"
 	"database/sql"
-	"encoding/base64"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
 
 	"github.com/RogueAlmond70/Muzz/explorepb"
-	"github.com/RogueAlmond70/Muzz/internal/database"
+	"github.com/RogueAlmond70/Muzz/internal/datastore"
+	"github.com/RogueAlmond70/Muzz/internal/handler"
 	"github.com/RogueAlmond70/Muzz/internal/metrics"
 	_ "github.com/lib/pq"
 	"github.com/prometheus/client_golang/prometheus"
@@ -19,14 +18,14 @@ import (
 	"google.golang.org/grpc/status"
 )
 
-var _ database.DBClient = &Postgres{}
+var _ datastore.DBClient = &Postgres{}
 
 type Postgres struct {
-	logger zap.Logger
+	logger *zap.Logger
 	db     *sql.DB
 }
 
-func NewPostgres(logger zap.Logger, sqldb *sql.DB) *Postgres {
+func NewPostgres(logger *zap.Logger, sqldb *sql.DB) *Postgres {
 	return &Postgres{
 		logger: logger,
 		db:     sqldb,
@@ -37,17 +36,12 @@ func ConnectDB() (*sql.DB, error) {
 	connStr := "postgres://postgres:password@localhost:5432/myappdb?sslmode=disable"
 	db, err := sql.Open("postgres", connStr)
 	if err != nil {
-		return nil, fmt.Errorf("error connecting to database: %v:", err)
+		return nil, fmt.Errorf("error connecting to database: %v", err)
 	}
 	if err := db.Ping(); err != nil {
 		return nil, fmt.Errorf("error checking database connection: %v", err)
 	}
 	return db, nil
-}
-
-type PaginationCursor struct {
-	ID        int    `json:"id"`
-	CreatedAt uint64 `json:"created_at"`
 }
 
 // This will be called by ListLikedYou, and needs to be called repeatedly o as not to overwhelm device
@@ -63,7 +57,7 @@ func (p *Postgres) GetLikes(ctx context.Context, req *explorepb.ListLikedYouRequ
 	var hasCursor bool
 
 	if req.PaginationToken != nil && *req.PaginationToken != "" {
-		cursor, err := decodeCursor(*req.PaginationToken)
+		cursor, err := handler.DecodeCursor(*req.PaginationToken)
 		if err != nil {
 			p.logger.Error("error decoding cursor: err", zap.Error(err))
 			return nil, status.Errorf(codes.InvalidArgument, "invalid pagination token")
@@ -105,7 +99,7 @@ FROM latest_likes
 	defer rows.Close()
 
 	var likers []*explorepb.ListLikedYouResponse_Liker
-	var nextCursor *PaginationCursor
+	var nextCursor *handler.PaginationCursor
 
 	for rows.Next() {
 		var (
@@ -129,7 +123,7 @@ FROM latest_likes
 			})
 		} else {
 			// We've hit one extra result → set next cursor
-			nextCursor = &PaginationCursor{ID: id, CreatedAt: unixTimestamp}
+			nextCursor = &handler.PaginationCursor{ID: id, CreatedAt: unixTimestamp}
 		}
 	}
 	// Checking for any iteration related errors, connection issues etc
@@ -141,7 +135,7 @@ FROM latest_likes
 
 	var nextToken string
 	if nextCursor != nil {
-		nextToken, err = encodeCursor(nextCursor.ID, nextCursor.CreatedAt)
+		nextToken, err = handler.EncodeCursor(nextCursor.ID, nextCursor.CreatedAt)
 		if err != nil {
 			metrics.ListLikedYouRequestErrorsTotal.WithLabelValues("cursor_encoding_error").Inc()
 			p.logger.Error("unable to get next token", zap.Error(err))
@@ -168,7 +162,7 @@ func (p *Postgres) GetNewLikes(ctx context.Context, req *explorepb.ListLikedYouR
 	var hasCursor bool
 
 	if req.PaginationToken != nil && *req.PaginationToken != "" {
-		cursor, err := decodeCursor(*req.PaginationToken)
+		cursor, err := handler.DecodeCursor(*req.PaginationToken)
 		if err != nil {
 			p.logger.Error("unable to decode cursor", zap.Error(err))
 			return nil, status.Errorf(codes.InvalidArgument, "invalid pagination token")
@@ -212,7 +206,7 @@ func (p *Postgres) GetNewLikes(ctx context.Context, req *explorepb.ListLikedYouR
 	defer rows.Close()
 
 	var likers []*explorepb.ListLikedYouResponse_Liker
-	var nextCursor *PaginationCursor
+	var nextCursor *handler.PaginationCursor
 
 	for rows.Next() {
 		var (
@@ -236,7 +230,7 @@ func (p *Postgres) GetNewLikes(ctx context.Context, req *explorepb.ListLikedYouR
 			})
 		} else {
 			// We've hit one extra result → set next cursor
-			nextCursor = &PaginationCursor{ID: id, CreatedAt: unixTimestamp}
+			nextCursor = &handler.PaginationCursor{ID: id, CreatedAt: unixTimestamp}
 		}
 	}
 	// Checking for any iteration related errors, connection issues etc
@@ -247,7 +241,7 @@ func (p *Postgres) GetNewLikes(ctx context.Context, req *explorepb.ListLikedYouR
 
 	var nextToken string
 	if nextCursor != nil {
-		nextToken, err = encodeCursor(nextCursor.ID, nextCursor.CreatedAt)
+		nextToken, err = handler.EncodeCursor(nextCursor.ID, nextCursor.CreatedAt)
 		if err != nil {
 			metrics.ListNewLikedYouRequestErrorsTotal.WithLabelValues("cursor_encoding_error").Inc()
 			return nil, fmt.Errorf("unable to get next token: %v", err)
@@ -262,9 +256,9 @@ func (p *Postgres) GetNewLikes(ctx context.Context, req *explorepb.ListLikedYouR
 
 // This will be called by CountLikedYou
 func (p *Postgres) GetCountLikedYou(ctx context.Context, req *explorepb.CountLikedYouRequest) (resp *explorepb.CountLikedYouResponse, err error) {
-	timer := prometheus.NewTimer(metrics.ListNewLikedYouRequestDurationSeconds)
+	timer := prometheus.NewTimer(metrics.CountLikedYouRequestDurationSeconds)
+	metrics.CountLikedYouRequestsTotal.WithLabelValues().Inc()
 	defer timer.ObserveDuration()
-	metrics.ListNewLikedYouRequestsTotal.WithLabelValues().Inc()
 
 	query := `
 	SELECT COUNT(DISTINCT l.liker_id)
@@ -332,49 +326,9 @@ func (p *Postgres) PutDecision(ctx context.Context, req *explorepb.PutDecisionRe
 			return nil, fmt.Errorf("error checking for mutual like: %v", err)
 		}
 		mutualLikes = true
+		metrics.PutDecisionMutualLikesTotal.WithLabelValues().Inc()
 	}
 	return &explorepb.PutDecisionResponse{
 		MutualLikes: mutualLikes,
 	}, nil
-}
-
-func encodeCursor(id int, createdAt uint64) (string, error) {
-	cursor := PaginationCursor{
-		ID:        id,
-		CreatedAt: createdAt,
-	}
-	data, err := json.Marshal(cursor)
-	if err != nil {
-		return "", err
-	}
-	return base64.StdEncoding.EncodeToString(data), nil
-}
-
-func decodeCursor(token string) (*PaginationCursor, error) {
-	data, err := base64.StdEncoding.DecodeString(token)
-	if err != nil {
-		return nil, err
-	}
-	var cursor PaginationCursor
-	if err := json.Unmarshal(data, &cursor); err != nil {
-		return nil, err
-	}
-	if err := validateCursor(&cursor); err != nil {
-		return nil, err
-	}
-	return &cursor, nil
-}
-
-func validateCursor(c *PaginationCursor) error {
-	if c.ID < 0 {
-		return fmt.Errorf("invalid cursor: ID cannot be negative")
-	}
-	if c.CreatedAt == 0 {
-		return fmt.Errorf("invalid cursor: CreatedAt timestamp is zero")
-	}
-	now := uint64(time.Now().Unix())
-	if c.CreatedAt > now+3600 { // One hour
-		return fmt.Errorf("invalid cursor: CreatedAt timestamp is in the future")
-	}
-	return nil
 }
