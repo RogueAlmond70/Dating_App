@@ -1,9 +1,57 @@
 # Explore Service
 
+## Quick Start
+
+Ensure you have **Docker** and **Docker Compose** installed.
+
+Run the entire stack with (you will need the docker-compose.yml file):
+
+```bash
+docker-compose up --build -d
+```
+
+This command will build the app image and start all required services:
+
+PostgreSQL (DB)
+
+Redis (cache)
+
+Prometheus (metrics)
+
+Grafana (dashboard)
+
+Adminer (DB management)
+
+Explore Service (your Go app)
+
+Access your services at:
+
+App HTTP API: http://localhost:8080
+
+Adminer: http://localhost:5050 (username: postgres, password: password)
+
+Grafana: http://localhost:3000 (username: admin, password: muzzd8)
+
+Prometheus: http://localhost:9090
+
+To stop and remove all containers and volumes, run:
+
+```bash
+docker-compose down -v
+```
+
+Once running, you can access the logs by using:
+
+```bash
+docker logs -f "explore-service"
+```
+
+Your gRPC client will be able to communicate with the server via localhost:9001 if running locally, or via explore-server:9001 if on the same docker network.
+
 ## Overview
 
-This is a small subset of The Explore Service, a gRPC microservice responsible for managing user interaction decisions on the Muzz platform.  
-Users can either **like** or **pass** on other users, and the service tracks these decisions and mutual likes.  
+This is a small subset of The Explore Service, a gRPC microservice responsible for managing user interaction decisions on the Muzz platform.
+Users can either **like** or **pass** on other users, and the service tracks these decisions and mutual likes.
 This service implements four gRPC endpoints to list likers, count likers, and record decisions.
 
 ---
@@ -12,16 +60,16 @@ This service implements four gRPC endpoints to list likers, count likers, and re
 
 The service conforms to the following gRPC endpoints:
 
-- `ListLikedYou(ListLikedYouRequest) → ListLikedYouResponse`  
+- `ListLikedYou(ListLikedYouRequest) → ListLikedYouResponse`
   Lists users who liked the recipient.
 
-- `ListNewLikedYou(ListLikedYouRequest) → ListLikedYouResponse`  
+- `ListNewLikedYou(ListLikedYouRequest) → ListLikedYouResponse`
   Lists users who liked the recipient excluding those already liked back.
 
-- `CountLikedYou(CountLikedYouRequest) → CountLikedYouResponse`  
+- `CountLikedYou(CountLikedYouRequest) → CountLikedYouResponse`
   Counts users who liked the recipient.
 
-- `PutDecision(PutDecisionRequest) → PutDecisionResponse`  
+- `PutDecision(PutDecisionRequest) → PutDecisionResponse`
   Records the actor's decision to like or pass the recipient. Returns whether there's a mutual like.
 
 Message structure includes pagination tokens for scalable listing.
@@ -86,23 +134,6 @@ In this coding challenge I've experimented with a number of solutions and settle
 ### Pagination
 
 Related to the problem of scalability is pagination. Fortunately the protobuf definition included pagination tokens, so this was trivial to implement. So as not to overwhelm the users device, a default value of 25 has been chosen (configurable via environment variables).
-
-### Build and run locally with Docker Compose
-
-```bash
-docker-compose up --build
-
-```
-
-## Building and Running
-
-- Once running, you can access the logs by using:
-
-```bash
-docker logs -f "explore-service"
-```
-
-- Your gRPC client will be able to communicate with the server via localhost:9001 if running locally, or via explore-server:9001 if on the same docker network.
 
 ## Data
 
