@@ -53,7 +53,7 @@ func (s Server) ListLikedYou(ctx context.Context, req *pb.ListLikedYouRequest) (
 	// Cache the response if appropriate (see shouldCache for logic).
 	if shouldCache(req) {
 		data, _ := proto.Marshal(response)
-		_ = s.Cache.Set(ctx, cacheKey, data, redis_cache.ExploreTTL)
+		_ = s.Cache.Set(ctx, cacheKey, data, cfg.)
 	}
 
 	return response, nil

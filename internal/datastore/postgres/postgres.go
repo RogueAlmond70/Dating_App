@@ -89,7 +89,7 @@ func ConnectDBWithRetry(maxRetries int, delay time.Duration) (*sql.DB, error) {
 
 func (p *Postgres) GetLikes(ctx context.Context, req *explorepb.ListLikedYouRequest) (*explorepb.ListLikedYouResponse, error) {
 	timer := prometheus.NewTimer(metrics.ListLikedYouRequestDurationSeconds)
-	metrics.ListLikedYouRequestsTotal.WithLabelValues().Inc()
+	metrics.ListLikedYouRequestsTotal.WithLabelValues("list_liked_you_requests_total").Inc()
 
 	defer func() { // If performance is slow for some reason, it should be logged.
 		elapsed := timer.ObserveDuration()
@@ -158,7 +158,7 @@ func (p *Postgres) GetLikes(ctx context.Context, req *explorepb.ListLikedYouRequ
 
 	rows, err := p.db.QueryContext(ctx, query, args...)
 	if err != nil {
-		metrics.ListLikedYouRequestErrorsTotal.WithLabelValues("sql_query_error").Inc()
+		metrics.ListLikedYouRequestErrorsTotal.WithLabelValues("list_liked_you_requests_total").Inc()
 		p.logger.Error("unable to run sql query",
 			zap.String("operation_name", "ListLikedYou"),
 			zap.Error(err),
@@ -179,7 +179,7 @@ func (p *Postgres) GetLikes(ctx context.Context, req *explorepb.ListLikedYouRequ
 		)
 
 		if err := rows.Scan(&likerID, &createdAt, &id); err != nil {
-			metrics.ListLikedYouRequestErrorsTotal.WithLabelValues("scan_error").Inc()
+			metrics.ListLikedYouRequestErrorsTotal.WithLabelValues("list_liked_you_requests_total").Inc()
 			p.logger.Error("unable to scan rows",
 				zap.String("operation_name", "ListLikedYou"),
 				zap.Error(err),
@@ -202,7 +202,7 @@ func (p *Postgres) GetLikes(ctx context.Context, req *explorepb.ListLikedYouRequ
 	}
 	// Checking for any iteration related errors, connection issues etc
 	if err := rows.Err(); err != nil {
-		metrics.ListLikedYouRequestErrorsTotal.WithLabelValues("row_iteration_error").Inc()
+		metrics.ListLikedYouRequestErrorsTotal.WithLabelValues("list_liked_you_requests_total").Inc()
 		p.logger.Error("row iteration error",
 			zap.String("operation_name", "ListLikedYou"),
 			zap.Error(err),
@@ -223,7 +223,7 @@ func (p *Postgres) GetLikes(ctx context.Context, req *explorepb.ListLikedYouRequ
 		)
 
 		if err != nil {
-			metrics.ListLikedYouRequestErrorsTotal.WithLabelValues("cursor_encoding_error").Inc()
+			metrics.ListLikedYouRequestErrorsTotal.WithLabelValues("list_liked_you_requests_total").Inc()
 			p.logger.Error("unable to encode cursor for next token",
 				zap.String("operation_name", "ListLikedYou"),
 				zap.Error(err),
@@ -242,7 +242,7 @@ func (p *Postgres) GetLikes(ctx context.Context, req *explorepb.ListLikedYouRequ
 // List all users who liked the recipient excluding those who have been liked in return
 func (p *Postgres) GetNewLikes(ctx context.Context, req *explorepb.ListLikedYouRequest) (resp *explorepb.ListLikedYouResponse, err error) {
 	timer := prometheus.NewTimer(metrics.ListNewLikedYouRequestDurationSeconds)
-	metrics.ListNewLikedYouRequestsTotal.WithLabelValues().Inc()
+	metrics.ListNewLikedYouRequestsTotal.WithLabelValues("list_new_liked_you_requests_total").Inc()
 
 	defer func() { // If performance is slow for some reason, it should be logged.
 		elapsed := timer.ObserveDuration()
@@ -314,7 +314,7 @@ func (p *Postgres) GetNewLikes(ctx context.Context, req *explorepb.ListLikedYouR
 
 	rows, err := p.db.QueryContext(ctx, query, args...)
 	if err != nil {
-		metrics.ListNewLikedYouRequestErrorsTotal.WithLabelValues("sql_query_error").Inc()
+		metrics.ListNewLikedYouRequestErrorsTotal.WithLabelValues("list_new_liked_you_requests_total").Inc()
 		p.logger.Error("unable to run sql query",
 			zap.String("operation_name", "ListNewLikedYou"),
 			zap.Error(err),
@@ -335,7 +335,7 @@ func (p *Postgres) GetNewLikes(ctx context.Context, req *explorepb.ListLikedYouR
 		)
 
 		if err := rows.Scan(&likerID, &createdAt, &id); err != nil {
-			metrics.ListNewLikedYouRequestErrorsTotal.WithLabelValues("scan_error").Inc()
+			metrics.ListNewLikedYouRequestErrorsTotal.WithLabelValues("list_new_liked_you_requests_total").Inc()
 			p.logger.Error("unable to scan rows",
 				zap.String("operation_name", "ListNewLikedYou"),
 				zap.Error(err),
@@ -358,7 +358,7 @@ func (p *Postgres) GetNewLikes(ctx context.Context, req *explorepb.ListLikedYouR
 	}
 	// Checking for any iteration related errors, connection issues etc
 	if err := rows.Err(); err != nil {
-		metrics.ListNewLikedYouRequestErrorsTotal.WithLabelValues("row_iteration_error").Inc()
+		metrics.ListNewLikedYouRequestErrorsTotal.WithLabelValues("list_new_liked_you_requests_total").Inc()
 		p.logger.Error("row iteration error",
 			zap.String("operation_name", "ListNewLikedYou"),
 			zap.Error(err),
@@ -378,7 +378,7 @@ func (p *Postgres) GetNewLikes(ctx context.Context, req *explorepb.ListLikedYouR
 			zap.String("next token", nextToken),
 		)
 		if err != nil {
-			metrics.ListNewLikedYouRequestErrorsTotal.WithLabelValues("cursor_encoding_error").Inc()
+			metrics.ListNewLikedYouRequestErrorsTotal.WithLabelValues("list_new_liked_you_requests_total").Inc()
 			p.logger.Error("unable to encode cursor for next token",
 				zap.String("operation_name", "ListLikedYou"),
 				zap.Error(err),
@@ -397,7 +397,7 @@ func (p *Postgres) GetNewLikes(ctx context.Context, req *explorepb.ListLikedYouR
 // This will be called by CountLikedYou
 func (p *Postgres) GetCountLikedYou(ctx context.Context, req *explorepb.CountLikedYouRequest) (resp *explorepb.CountLikedYouResponse, err error) {
 	timer := prometheus.NewTimer(metrics.CountLikedYouRequestDurationSeconds)
-	metrics.CountLikedYouRequestsTotal.WithLabelValues().Inc()
+	metrics.CountLikedYouRequestsTotal.WithLabelValues("count_liked_you_requests_total").Inc()
 
 	defer func() {
 		elapsed := timer.ObserveDuration() // If performance is slow for some reason, it should be logged.
@@ -427,7 +427,7 @@ func (p *Postgres) GetCountLikedYou(ctx context.Context, req *explorepb.CountLik
 	var count int64
 	err = p.db.QueryRowContext(ctx, query, req.RecipientUserId).Scan(&count)
 	if err != nil {
-		metrics.ListNewLikedYouRequestErrorsTotal.WithLabelValues("sql_query_error").Inc()
+		metrics.ListNewLikedYouRequestErrorsTotal.WithLabelValues("count_liked_you_requests_total").Inc()
 		p.logger.Error("unable to run sql query",
 			zap.String("operation_name", "CountLikedYou"),
 			zap.Error(err),
@@ -443,7 +443,7 @@ func (p *Postgres) GetCountLikedYou(ctx context.Context, req *explorepb.CountLik
 // Record the decision of the actor to like or pass the recipient
 func (p *Postgres) PutDecision(ctx context.Context, req *explorepb.PutDecisionRequest) (resp *explorepb.PutDecisionResponse, err error) {
 	timer := prometheus.NewTimer(metrics.PutDecisionRequestDurationSeconds)
-	metrics.PutDecisionRequestsTotal.WithLabelValues("request").Inc()
+	metrics.PutDecisionRequestsTotal.WithLabelValues("put_decision_requests_total").Inc()
 
 	defer func() {
 		elapsed := timer.ObserveDuration() // If performance is slow for some reason, it should be logged.
@@ -466,7 +466,7 @@ func (p *Postgres) PutDecision(ctx context.Context, req *explorepb.PutDecisionRe
 
 	_, err = p.db.ExecContext(ctx, query, req.ActorUserId, req.RecipientUserId, req.LikedRecipient)
 	if err != nil {
-		metrics.PutDecisionRequestErrorsTotal.WithLabelValues("insert_update_error").Inc()
+		metrics.PutDecisionRequestErrorsTotal.WithLabelValues("put_decision_requests_total").Inc()
 		p.logger.Error("unable to run sql query",
 			zap.String("operation_name", "PutDecision"),
 			zap.Error(err),
@@ -504,7 +504,7 @@ func (p *Postgres) PutDecision(ctx context.Context, req *explorepb.PutDecisionRe
 				MutualLikes: false,
 			}, nil
 		} else if err != nil {
-			metrics.PutDecisionRequestErrorsTotal.WithLabelValues("general_error").Inc()
+			metrics.PutDecisionRequestErrorsTotal.WithLabelValues("put_decision_requests_total").Inc()
 			p.logger.Error("unable to run sql query",
 				zap.String("operation_name", "PutDecision"),
 				zap.Error(err),

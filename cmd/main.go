@@ -3,13 +3,12 @@ package main
 import (
 	"context"
 	"fmt"
-	"log"
 	"net"
 	"net/http"
 	"os"
-	"time"
 
 	"github.com/RogueAlmond70/Muzz/explorepb"
+	"github.com/RogueAlmond70/Muzz/internal/config"
 	"github.com/RogueAlmond70/Muzz/internal/datastore/postgres"
 	redis_cache "github.com/RogueAlmond70/Muzz/internal/datastore/redis"
 	"github.com/RogueAlmond70/Muzz/internal/handler"
@@ -30,11 +29,19 @@ func main() {
 	}
 	defer zlog.Sync()
 
-	redisAddr := getRedisAddr()
+	cfg, err := config.LoadConfig()
+	if err != nil {
+		zlog.Error("error loading config", zap.Error(err))
+		os.Exit(1)
+	}
+
+	// Set up redis.
+	redisAddr := fmt.Sprintf("%s:%s", cfg.RedisHost, cfg.RedisPort)
+
 	redisClient := redis.NewClient(&redis.Options{
-		Addr:     redisAddr, // or use REDIS_URL env var for Docker/cloud
-		Password: "",        // set if needed
-		DB:       0,         // use default DB
+		Addr:     redisAddr,
+		Password: cfg.RedisPassword,
+		DB:       0,
 	})
 	// Check the connection.
 	if err := redisClient.Ping(ctx).Err(); err != nil {
@@ -43,7 +50,7 @@ func main() {
 	}
 
 	// Create a postgres instance.
-	db, err := postgres.ConnectDBWithRetry(10, 2*time.Second)
+	db, err := postgres.ConnectDBWithRetry(cfg.PostgresRetry, cfg.PostgresDelay)
 	if err != nil {
 		zlog.Error("could not connect to DB", zap.Error(err))
 		os.Exit(1)
@@ -53,7 +60,7 @@ func main() {
 	pgClient := postgres.NewPostgres(zlog, db)
 
 	// Create our concrete impementation of the cache interface.
-	cache := redis_cache.NewRedisCache(redisClient, redis_cache.ExploreTTL)
+	cache := redis_cache.NewRedisCache(redisClient, cfg.ExploreTTL)
 
 	// Create our server to handle requests to our endpoints.
 	srv := &handler.Server{
@@ -64,35 +71,23 @@ func main() {
 	// Set up Prometheus.
 	go func() {
 		http.Handle("/metrics", promhttp.Handler())
-		zlog.Info("Prometheus metrics available at :2112/metrics")
+		zlog.Info("Prometheus metrics available at", zap.String(":", cfg.PrometheusPort), zap.String("/", "metrics"))
 		if err := http.ListenAndServe(":2112", nil); err != nil {
 			zlog.Error("Metrics server failed", zap.Error(err))
 		}
 	}()
 
 	// Set up our grpc server.
-	lis, err := net.Listen("tcp", ":9001")
+	lis, err := net.Listen("tcp", ":"+cfg.GRPCPort)
 	if err != nil {
-		log.Fatalf("failed to listen: %v", err)
+		zlog.Fatal("failed to listen", zap.Error(err))
 	}
 	grpcServer := grpc.NewServer()
 
 	explorepb.RegisterExploreServiceServer(grpcServer, srv)
-	log.Println("gRPC server listening on :9001")
+	zlog.Info("gRPC server listening", zap.String("port", cfg.GRPCPort))
 
 	if err := grpcServer.Serve(lis); err != nil {
-		log.Fatalf("failed to serve: %s", err)
+		zlog.Fatal("failed to serve gRPC", zap.Error(err))
 	}
-}
-
-func getRedisAddr() string {
-	host := os.Getenv("REDIS_HOST")
-	if host == "" {
-		host = "localhost" // default for local runs
-	}
-	port := os.Getenv("REDIS_PORT")
-	if port == "" {
-		port = "6379"
-	}
-	return fmt.Sprintf("%s:%s", host, port)
 }
