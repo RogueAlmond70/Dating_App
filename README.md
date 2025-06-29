@@ -134,6 +134,7 @@ CREATE INDEX idx_likes_liked_created ON likes (liked_id, created_at DESC);
 - Usernames are simply 'userX' where X is a number, e.g user1, user34, and so on.
 - The likes table is comprised of 40 mutual likes, 86 one-way likes, and 12 "dislikes". The assumption in this case being that a decision does not exist (null) until it is actively made. So a decision status of "false" implies an active dislike.
 - On average, users have liked 2 to 4 other users. For the purpose of testing pagination, user55 has had 26 likes, none reciprocated.
+- If you want to view the tables, Adminer can be accessed at localhost:5050. Server and username are postgres, password=password, database=myappdb.
 
 ### Observability
 
