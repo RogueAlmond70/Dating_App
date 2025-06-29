@@ -2,7 +2,7 @@
 
 ## Overview
 
-The Explore Service is a gRPC microservice responsible for managing user interaction decisions on the Muzz platform.  
+This is a small subset of The Explore Service, a gRPC microservice responsible for managing user interaction decisions on the Muzz platform.  
 Users can either **like** or **pass** on other users, and the service tracks these decisions and mutual likes.  
 This service implements four gRPC endpoints to list likers, count likers, and record decisions.
 
@@ -33,13 +33,12 @@ Message structure includes pagination tokens for scalable listing.
 - **Language & tools:** Written in Go using the latest Go 1.24 version and gRPC/protobuf tooling.
 - **Data storage:** PostgreSQL is used as the primary persistent store for decisions. Redis is used as a cache layer with TTL for improved performance.
 - **Metrics:** Prometheus metrics are exposed via a dedicated HTTP endpoint.
-- **Containerization:** Fully containerized with Docker and orchestrated using Docker Compose. Dependencies include Postgres, Redis, Prometheus, and Grafana.
+- **Containerization:** Fully containerized with Docker and orchestrated using Docker Compose. Dependencies include Postgres, Redis, Prometheus, and Grafana, and Adminer.
 - **Scalability:**
   - Pagination and caching used to efficiently handle users with large decision sets.
   - Decisions can be overwritten to keep data consistent.
   - Designed for high throughput with latency metrics tracked.
 - **Logging:** Structured logging with Zap.
-- **KISS principle:** The design is kept straightforward without over-engineering.
 
 ---
 
