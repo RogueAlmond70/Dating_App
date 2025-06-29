@@ -438,85 +438,96 @@ func (p *Postgres) GetCountLikedYou(ctx context.Context, req *explorepb.CountLik
 
 // Record the decision of the actor to like or pass the recipient
 func (p *Postgres) PutDecision(ctx context.Context, req *explorepb.PutDecisionRequest) (resp *explorepb.PutDecisionResponse, err error) {
-	timer := prometheus.NewTimer(metrics.PutDecisionRequestDurationSeconds)               // Setting a timer to track how long the method takes.
-	metrics.PutDecisionRequestsTotal.WithLabelValues("put_decision_requests_total").Inc() // Increment the counter of total requests of this type.
+	timer := prometheus.NewTimer(metrics.PutDecisionRequestDurationSeconds)
+	metrics.PutDecisionRequestsTotal.WithLabelValues("put_decision_requests_total").Inc()
 
 	defer func() {
-		elapsed := timer.ObserveDuration() // If performance is slow for some reason, it should be logged.
+		elapsed := timer.ObserveDuration()
 		if elapsed > 500*time.Millisecond {
 			p.logger.Warn("slow query detected (>500ms)",
 				zap.Duration("duration", elapsed),
 				zap.String("method", "PutDecision"),
-				zap.String("recipientID", req.RecipientUserId),
+				zap.String("recipientID", req.GetRecipientUserId()),
 			)
 		}
 	}()
 
-	// This query updates a like decision by an actor to a recipient.
 	query := `
-			INSERT INTO likes (liker_id, liked_id, decision, decision_at, created_at)
-			VALUES ($1, $2, $3, NOW(), NOW())
-			ON CONFLICT (liker_id, liked_id) 
-			DO UPDATE SET decision = EXCLUDED.decision, decision_at = EXCLUDED.decision_at
-			RETURNING decision
-			`
+		INSERT INTO likes (liker_id, liked_id, decision, decision_at, created_at)
+		VALUES ($1, $2, $3, NOW(), NOW())
+		ON CONFLICT (liker_id, liked_id)
+		DO UPDATE SET 
+			decision = EXCLUDED.decision,
+			decision_at = EXCLUDED.decision_at
+		WHERE likes.decision IS DISTINCT FROM EXCLUDED.decision
+		RETURNING decision
+	`
 
-	_, err = p.db.ExecContext(ctx, query, req.ActorUserId, req.RecipientUserId, req.LikedRecipient)
-	if err != nil {
+	var newDecision bool
+	err = p.db.QueryRowContext(ctx, query, req.ActorUserId, req.RecipientUserId, req.LikedRecipient).Scan(&newDecision)
+
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		p.logger.Info("no-op: decision already recorded",
+			zap.String("recipientID", req.GetRecipientUserId()),
+			zap.String("actorID", req.GetActorUserId()),
+			zap.Bool("liked_recipient", req.GetLikedRecipient()),
+		)
+	case err != nil:
 		metrics.PutDecisionRequestErrorsTotal.WithLabelValues("put_decision_requests_total").Inc()
-		p.logger.Error("unable to run sql query",
+		p.logger.Error("failed to execute insert/update",
 			zap.String("operation_name", "PutDecision"),
 			zap.Error(err),
 			zap.String("recipientID", req.GetRecipientUserId()),
 			zap.String("actorID", req.GetActorUserId()),
 		)
 		return nil, fmt.Errorf("failed to insert or update like decision: %w", err)
+	default:
+		p.logger.Info("put decision recorded",
+			zap.String("recipientID", req.GetRecipientUserId()),
+			zap.String("actorID", req.GetActorUserId()),
+			zap.Bool("liked_recipient", req.GetLikedRecipient()),
+		)
 	}
 
-	p.logger.Info("put decision recorded",
-		zap.String("recipientID", req.GetRecipientUserId()),
-		zap.String("actorID", req.GetActorUserId()),
-		zap.Bool("liked_recipient", req.GetLikedRecipient()),
-	)
-
-	// Check for mutual like only if this user liked the recipient.
+	// Check for mutual like only if user liked the recipient
 	mutualLikes := false
 	if req.LikedRecipient {
 		checkMutualQuery := `
 			SELECT TRUE
 			FROM likes
-			WHERE liker_id = $1 AND liked_id = $2 AND decision
+			WHERE liker_id = $1 AND liked_id = $2 AND decision = TRUE
 			LIMIT 1
 		`
 		var exists bool
-		err := p.db.QueryRowContext(ctx, checkMutualQuery, req.ActorUserId, req.RecipientUserId).Scan(&exists)
+		err := p.db.QueryRowContext(ctx, checkMutualQuery, req.RecipientUserId, req.ActorUserId).Scan(&exists)
 
-		if errors.Is(err, sql.ErrNoRows) { // No Rows is not necesarily an error, but it does mean there is no mutual like.
+		switch {
+		case errors.Is(err, sql.ErrNoRows):
 			metrics.PutDecisionNoMutualLikesTotal.WithLabelValues("no_mutual_like").Inc()
 			p.logger.Info("no mutual like",
 				zap.String("recipientID", req.GetRecipientUserId()),
 				zap.String("actorID", req.GetActorUserId()),
 			)
-			return &explorepb.PutDecisionResponse{
-				MutualLikes: false,
-			}, nil
-		} else if err != nil {
+		case err != nil:
 			metrics.PutDecisionRequestErrorsTotal.WithLabelValues("put_decision_requests_total").Inc()
-			p.logger.Error("unable to run sql query",
+			p.logger.Error("error checking mutual like",
 				zap.String("operation_name", "PutDecision"),
 				zap.Error(err),
 				zap.String("recipientID", req.GetRecipientUserId()),
 				zap.String("actorID", req.GetActorUserId()),
 			)
 			return nil, fmt.Errorf("error checking for mutual like: %w", err)
+		default:
+			mutualLikes = true
+			metrics.PutDecisionMutualLikesTotal.WithLabelValues("mutual_like").Inc()
+			p.logger.Info("mutual like!",
+				zap.String("recipientID", req.GetRecipientUserId()),
+				zap.String("actorID", req.GetActorUserId()),
+			)
 		}
-		mutualLikes = true
-		metrics.PutDecisionMutualLikesTotal.WithLabelValues("mutual_like").Inc()
-		p.logger.Info("mutual like!",
-			zap.String("recipientID", req.GetRecipientUserId()),
-			zap.String("actorID", req.GetActorUserId()),
-		)
 	}
+
 	return &explorepb.PutDecisionResponse{
 		MutualLikes: mutualLikes,
 	}, nil
