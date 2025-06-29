@@ -11,13 +11,23 @@ import (
 
 	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/RogueAlmond70/Muzz/explorepb"
+	"github.com/RogueAlmond70/Muzz/internal/config"
 	"github.com/RogueAlmond70/Muzz/internal/datastore/postgres"
-
-	//"github.com/RogueAlmond70/Muzz/internal/handler"
 	"go.uber.org/zap"
-	//"google.golang.org/grpc/codes"
-	//"google.golang.org/grpc/status"
 )
+
+func NewTestConfig() *config.Config {
+	return &config.Config{
+		PostgresHost:     "localhost",
+		PostgresPort:     "5432",
+		PostgresUser:     "test_user",
+		PostgresPassword: "test_pass",
+		PostgresDB:       "test_db",
+		PostgresRetry:    1,
+		PostgresDelay:    200 * time.Millisecond,
+		ExploreTTL:       5 * time.Second,
+	}
+}
 
 func newPostgresWithMock(t *testing.T) (*postgres.Postgres, sqlmock.Sqlmock, func()) {
 	db, mock, err := sqlmock.New()
@@ -25,7 +35,7 @@ func newPostgresWithMock(t *testing.T) (*postgres.Postgres, sqlmock.Sqlmock, fun
 		t.Fatalf("failed to create sqlmock: %v", err)
 	}
 	logger := zap.NewNop()
-	pg := postgres.NewPostgres(logger, db)
+	pg := postgres.NewPostgres(logger, db, *NewTestConfig())
 	return pg, mock, func() {
 		db.Close()
 	}

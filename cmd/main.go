@@ -27,7 +27,11 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
-	defer zlog.Sync()
+	defer func() {
+		if err := zlog.Sync(); err != nil {
+			fmt.Fprintf(os.Stderr, "Failed to sync logger: %v\n", err)
+		}
+	}()
 
 	cfg, err := config.LoadConfig()
 	if err != nil {
@@ -50,14 +54,14 @@ func main() {
 	}
 
 	// Create a postgres instance.
-	db, err := postgres.ConnectDBWithRetry(cfg.PostgresRetry, cfg.PostgresDelay)
+	db, err := postgres.ConnectDBWithRetry(*cfg, *zlog)
 	if err != nil {
 		zlog.Error("could not connect to DB", zap.Error(err))
 		os.Exit(1)
 	}
 
 	// Create our postgres client.
-	pgClient := postgres.NewPostgres(zlog, db)
+	pgClient := postgres.NewPostgres(zlog, db, *cfg)
 
 	// Create our concrete impementation of the cache interface.
 	cache := redis_cache.NewRedisCache(redisClient, cfg.ExploreTTL)
@@ -76,7 +80,7 @@ func main() {
 			zap.String("host", cfg.PrometheusPort),
 			zap.String("path", "/metrics"),
 		)
-		if err := http.ListenAndServe(":2112", nil); err != nil {
+		if err := http.ListenAndServe(":"+cfg.PrometheusPort, nil); err != nil {
 			zlog.Error("Metrics server failed", zap.Error(err))
 		}
 	}()

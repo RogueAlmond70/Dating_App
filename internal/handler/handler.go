@@ -121,6 +121,7 @@ func (s Server) CountLikedYou(ctx context.Context, req *pb.CountLikedYouRequest)
 	return response, nil
 }
 
+// PutDecision isn't making use of caching as it isn't simply returning data.
 func (s Server) PutDecision(ctx context.Context, req *pb.PutDecisionRequest) (*pb.PutDecisionResponse, error) {
 	response, err := s.DB.PutDecision(ctx, req)
 	if err != nil {
@@ -129,6 +130,7 @@ func (s Server) PutDecision(ctx context.Context, req *pb.PutDecisionRequest) (*p
 	return response, nil
 }
 
+// shouldCache is some simple logic that states we cache the first page, and any likes from the last 7 days.
 func shouldCache(req *pb.ListLikedYouRequest) bool {
 	if req.PaginationToken == nil || *req.PaginationToken == "" {
 		return true // Cache page 1
@@ -175,6 +177,7 @@ func DecodeCursor(token string) (*PaginationCursor, error) {
 	return &cursor, nil
 }
 
+// validateCursor is some defensive programming to prevent something which likely won't happen.
 func validateCursor(c *PaginationCursor) error {
 	if c.ID < 0 {
 		return fmt.Errorf("invalid cursor: ID cannot be negative")

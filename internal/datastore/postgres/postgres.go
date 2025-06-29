@@ -5,10 +5,10 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"os"
 	"time"
 
 	"github.com/RogueAlmond70/Muzz/explorepb"
+	"github.com/RogueAlmond70/Muzz/internal/config"
 	"github.com/RogueAlmond70/Muzz/internal/datastore"
 	"github.com/RogueAlmond70/Muzz/internal/handler"
 	"github.com/RogueAlmond70/Muzz/internal/metrics"
@@ -24,45 +24,30 @@ var _ datastore.DBClient = &Postgres{}
 type Postgres struct {
 	logger *zap.Logger
 	db     *sql.DB
+	cfg    config.Config
 }
 
-func NewPostgres(logger *zap.Logger, sqldb *sql.DB) *Postgres {
+func NewPostgres(logger *zap.Logger, sqldb *sql.DB, cfg config.Config) *Postgres {
 	return &Postgres{
 		logger: logger,
 		db:     sqldb,
+		cfg:    cfg,
 	}
 }
 
-func getPostgresConnStr() string {
-	host := os.Getenv("POSTGRES_HOST")
-	if host == "" {
-		host = "localhost" // default for local runs
-	}
-	port := os.Getenv("POSTGRES_PORT")
-	if port == "" {
-		port = "5432"
-	}
-	user := os.Getenv("POSTGRES_USER")
-	if user == "" {
-		user = "postgres"
-	}
-	password := os.Getenv("POSTGRES_PASSWORD")
-	if password == "" {
-		password = "password"
-	}
-	dbname := os.Getenv("POSTGRES_DB")
-	if dbname == "" {
-		dbname = "myappdb"
-	}
-
+func getPostgresConnStr(cfg *config.Config) string {
 	return fmt.Sprintf(
 		"postgres://%s:%s@%s:%s/%s?sslmode=disable",
-		user, password, host, port, dbname,
+		cfg.PostgresUser,
+		cfg.PostgresPassword,
+		cfg.PostgresHost,
+		cfg.PostgresPort,
+		cfg.PostgresDB,
 	)
 }
 
-func ConnectDB() (*sql.DB, error) {
-	connStr := getPostgresConnStr()
+func ConnectDB(cfg config.Config) (*sql.DB, error) {
+	connStr := getPostgresConnStr(&cfg)
 	db, err := sql.Open("postgres", connStr)
 	if err != nil {
 		return nil, fmt.Errorf("error connecting to database: %w", err)
@@ -73,25 +58,30 @@ func ConnectDB() (*sql.DB, error) {
 	return db, nil
 }
 
-func ConnectDBWithRetry(maxRetries int, delay time.Duration) (*sql.DB, error) {
+func ConnectDBWithRetry(cfg config.Config, zlog zap.Logger) (*sql.DB, error) {
 	var db *sql.DB
 	var err error
-	for i := 0; i < maxRetries; i++ {
-		db, err = ConnectDB()
+	for i := 0; i < cfg.PostgresRetry; i++ {
+		db, err = ConnectDB(cfg)
 		if err == nil {
 			return db, nil
 		}
-		fmt.Printf("Failed to connect to DB (attempt %d/%d): %v\n", i+1, maxRetries, err)
-		time.Sleep(delay)
+		zlog.Warn("Failed to connect to DB",
+			zap.Int("attempt", i+1),
+			zap.Int("max_attempts", cfg.PostgresRetry),
+			zap.Error(err),
+		)
+		time.Sleep(cfg.PostgresDelay)
 	}
-	return nil, fmt.Errorf("failed to connect to database after %d attempts: %w", maxRetries, err)
+	return nil, fmt.Errorf("failed to connect to database after %d attempts: %w", cfg.PostgresRetry, err)
 }
 
+// GetLikes implements the ListLikedYouRequest.
 func (p *Postgres) GetLikes(ctx context.Context, req *explorepb.ListLikedYouRequest) (*explorepb.ListLikedYouResponse, error) {
 	timer := prometheus.NewTimer(metrics.ListLikedYouRequestDurationSeconds)
 	metrics.ListLikedYouRequestsTotal.WithLabelValues("list_liked_you_requests_total").Inc()
 
-	defer func() { // If performance is slow for some reason, it should be logged.
+	defer func() { // If performance is slow for some reason, it should be logged. An additional option is to define a new metric in prometheus and set up an alert.
 		elapsed := timer.ObserveDuration()
 		if elapsed > 500*time.Millisecond {
 			p.logger.Warn("slow query detected (>500ms)",
@@ -102,13 +92,13 @@ func (p *Postgres) GetLikes(ctx context.Context, req *explorepb.ListLikedYouRequ
 		}
 	}()
 
-	const pageSize = 25
+	pageSize := p.cfg.PageSize // PageSize is set to 25 by default in the environment variables.
 
 	var afterCreatedAt time.Time
 	var afterID int
 	var hasCursor bool
 
-	if req.PaginationToken != nil && *req.PaginationToken != "" {
+	if req.PaginationToken != nil && *req.PaginationToken != "" { // If a non blank pagination token exists, we decode it.
 		cursor, err := handler.DecodeCursor(*req.PaginationToken)
 		if err != nil {
 			p.logger.Error("unable to decode cursor",
@@ -125,7 +115,10 @@ func (p *Postgres) GetLikes(ctx context.Context, req *explorepb.ListLikedYouRequ
 		hasCursor = true
 	}
 
-	query := `
+	// This query retrieves likes where the liker is the actor and the liked is the recipient. I've limited results to the past year,
+	// but other options are feasible, for example having an archive table where likes for a given user past a certain date or quantity,
+	//  are automatically saved to. This could be maintained with a cron job.
+	query := `   
 	WITH latest_likes AS (
 	SELECT DISTINCT ON (liker_id) liker_id, created_at, id
 	FROM likes
@@ -137,6 +130,7 @@ func (p *Postgres) GetLikes(ctx context.Context, req *explorepb.ListLikedYouRequ
 	FROM latest_likes 
 	`
 
+	// This will hold the arguments we pass in to complete the query.
 	args := []interface{}{req.RecipientUserId}
 
 	if hasCursor {
@@ -147,16 +141,16 @@ func (p *Postgres) GetLikes(ctx context.Context, req *explorepb.ListLikedYouRequ
 			zap.Int("after_id", afterID),
 		)
 
-		query += " WHERE (created_at, id) < ($2, $3)"
+		query += " WHERE (created_at, id) < ($2, $3)" // If there is a cursor / pagination token, we use the userID and createdAt values in the WHERE clause.
 		args = append(args, afterCreatedAt.UTC(), afterID)
-		query += " ORDER BY created_at DESC, id DESC LIMIT $4"
+		query += " ORDER BY created_at DESC, id DESC LIMIT $4" // The limit will be the pageSize, but when we have a cursor that is the 4th argument, and when we don't it is the 2nd.
 		args = append(args, pageSize+1)
 	} else {
 		query += " ORDER BY created_at DESC, id DESC LIMIT $2"
 		args = append(args, pageSize+1)
 	}
 
-	rows, err := p.db.QueryContext(ctx, query, args...)
+	rows, err := p.db.QueryContext(ctx, query, args...) // Retrieve the rows of results.
 	if err != nil {
 		metrics.ListLikedYouRequestErrorsTotal.WithLabelValues("list_liked_you_requests_total").Inc()
 		p.logger.Error("unable to run sql query",
@@ -171,7 +165,7 @@ func (p *Postgres) GetLikes(ctx context.Context, req *explorepb.ListLikedYouRequ
 	var likers []*explorepb.ListLikedYouResponse_Liker
 	var nextCursor *handler.PaginationCursor
 
-	for rows.Next() {
+	for rows.Next() { // Here we loop through the rows, populating the likerID, createdAt, and id variables.
 		var (
 			likerID   string
 			createdAt time.Time
@@ -196,11 +190,11 @@ func (p *Postgres) GetLikes(ctx context.Context, req *explorepb.ListLikedYouRequ
 				UnixTimestamp: unixTimestamp,
 			})
 		} else {
-			// We've hit one extra result → set next cursor
+			// We've hit one extra result so set next cursor.
 			nextCursor = &handler.PaginationCursor{ID: id, CreatedAt: unixTimestamp}
 		}
 	}
-	// Checking for any iteration related errors, connection issues etc
+	// Checking for any iteration related errors, connection issues etc.
 	if err := rows.Err(); err != nil {
 		metrics.ListLikedYouRequestErrorsTotal.WithLabelValues("list_liked_you_requests_total").Inc()
 		p.logger.Error("row iteration error",
@@ -239,7 +233,7 @@ func (p *Postgres) GetLikes(ctx context.Context, req *explorepb.ListLikedYouRequ
 	}, nil
 }
 
-// List all users who liked the recipient excluding those who have been liked in return
+// GetNewLikes implements ListNewLikedYourRequest, and lists all users who liked the recipient excluding those who have been liked in return.
 func (p *Postgres) GetNewLikes(ctx context.Context, req *explorepb.ListLikedYouRequest) (resp *explorepb.ListLikedYouResponse, err error) {
 	timer := prometheus.NewTimer(metrics.ListNewLikedYouRequestDurationSeconds)
 	metrics.ListNewLikedYouRequestsTotal.WithLabelValues("list_new_liked_you_requests_total").Inc()
@@ -255,7 +249,7 @@ func (p *Postgres) GetNewLikes(ctx context.Context, req *explorepb.ListLikedYouR
 		}
 	}()
 
-	const pageSize = 25
+	pageSize := p.cfg.PageSize // PageSize is set to 25 by default in the environment variables.
 
 	var afterCreatedAt time.Time
 	var afterID int
@@ -276,8 +270,10 @@ func (p *Postgres) GetNewLikes(ctx context.Context, req *explorepb.ListLikedYouR
 		hasCursor = true
 	}
 
+	// This query selects all the actors that have liked the recipient that the recipient hasn't liked back at this point in time.
+	// Again I've limited returned users to those who liked the recipient within the past year.
 	query := `
-		SELECT l.liker_id, l.created_at, l.id 
+		SELECT l.liker_id, l.created_at, l.id        
 		FROM likes l
 		WHERE l.liked_id = $1 AND decision = true
 		AND created_at >= NOW() - INTERVAL '1 year'
@@ -352,11 +348,11 @@ func (p *Postgres) GetNewLikes(ctx context.Context, req *explorepb.ListLikedYouR
 				UnixTimestamp: unixTimestamp,
 			})
 		} else {
-			// We've hit one extra result → set next cursor
+			// We've hit one extra result so set next cursor.
 			nextCursor = &handler.PaginationCursor{ID: id, CreatedAt: unixTimestamp}
 		}
 	}
-	// Checking for any iteration related errors, connection issues etc
+	// Checking for any iteration related errors, connection issues etc.
 	if err := rows.Err(); err != nil {
 		metrics.ListNewLikedYouRequestErrorsTotal.WithLabelValues("list_new_liked_you_requests_total").Inc()
 		p.logger.Error("row iteration error",
@@ -394,10 +390,10 @@ func (p *Postgres) GetNewLikes(ctx context.Context, req *explorepb.ListLikedYouR
 	}, nil
 }
 
-// This will be called by CountLikedYou
+// GetCountLikedYou implements CountLikedYouRequest, returning the count of users who have liked the recipient at the time of requesting.
 func (p *Postgres) GetCountLikedYou(ctx context.Context, req *explorepb.CountLikedYouRequest) (resp *explorepb.CountLikedYouResponse, err error) {
-	timer := prometheus.NewTimer(metrics.CountLikedYouRequestDurationSeconds)
-	metrics.CountLikedYouRequestsTotal.WithLabelValues("count_liked_you_requests_total").Inc()
+	timer := prometheus.NewTimer(metrics.CountLikedYouRequestDurationSeconds)                  // Setting a timer to track how long the method takes.
+	metrics.CountLikedYouRequestsTotal.WithLabelValues("count_liked_you_requests_total").Inc() // Increment the counter of total requests of this type.
 
 	defer func() {
 		elapsed := timer.ObserveDuration() // If performance is slow for some reason, it should be logged.
@@ -442,8 +438,8 @@ func (p *Postgres) GetCountLikedYou(ctx context.Context, req *explorepb.CountLik
 
 // Record the decision of the actor to like or pass the recipient
 func (p *Postgres) PutDecision(ctx context.Context, req *explorepb.PutDecisionRequest) (resp *explorepb.PutDecisionResponse, err error) {
-	timer := prometheus.NewTimer(metrics.PutDecisionRequestDurationSeconds)
-	metrics.PutDecisionRequestsTotal.WithLabelValues("put_decision_requests_total").Inc()
+	timer := prometheus.NewTimer(metrics.PutDecisionRequestDurationSeconds)               // Setting a timer to track how long the method takes.
+	metrics.PutDecisionRequestsTotal.WithLabelValues("put_decision_requests_total").Inc() // Increment the counter of total requests of this type.
 
 	defer func() {
 		elapsed := timer.ObserveDuration() // If performance is slow for some reason, it should be logged.
@@ -456,10 +452,11 @@ func (p *Postgres) PutDecision(ctx context.Context, req *explorepb.PutDecisionRe
 		}
 	}()
 
+	// This query updates a like decision by an actor to a recipient.
 	query := `
 			INSERT INTO likes (liker_id, liked_id, decision, decision_at, created_at)
 			VALUES ($1, $2, $3, NOW(), NOW())
-			ON CONFLICT (liker_id, liked_id)
+			ON CONFLICT (liker_id, liked_id) 
 			DO UPDATE SET decision = EXCLUDED.decision, decision_at = EXCLUDED.decision_at
 			RETURNING decision
 			`
@@ -482,7 +479,7 @@ func (p *Postgres) PutDecision(ctx context.Context, req *explorepb.PutDecisionRe
 		zap.Bool("liked_recipient", req.GetLikedRecipient()),
 	)
 
-	// Check for mutual like only if this user liked the recipient
+	// Check for mutual like only if this user liked the recipient.
 	mutualLikes := false
 	if req.LikedRecipient {
 		checkMutualQuery := `

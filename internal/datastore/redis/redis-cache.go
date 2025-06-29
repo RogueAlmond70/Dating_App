@@ -8,7 +8,8 @@ import (
 )
 
 // In the real world we could have some kind of detailed caching policy, but for the sake of simplicity we will go with
-// a single ttl value.
+// a single ttl value, set as an environment variable. One consideration however is that a mismatch in TTL values could mean the user seeing more or less likes
+// than the app says they have, which wouldn't make for the best user experience.
 type RedisCache struct {
 	client *redis.Client
 	ttl    time.Duration

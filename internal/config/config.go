@@ -21,6 +21,7 @@ type Config struct {
 	ExploreTTL       time.Duration
 	PrometheusPort   string
 	GRPCPort         string
+	PageSize         int
 }
 
 func LoadConfig() (*Config, error) {
@@ -35,6 +36,10 @@ func LoadConfig() (*Config, error) {
 	postgresDelay, err := time.ParseDuration(getEnv("POSTGRES_DELAY", "2s"))
 	if err != nil {
 		return nil, fmt.Errorf("error parsing duration for Postgres Delay environment variable: %w", err)
+	}
+	pageSize, err := strconv.Atoi(getEnv("PAGE_SIZE", "25"))
+	if err != nil {
+		return nil, fmt.Errorf("error parsing PAGE_SIZE: %w", err)
 	}
 
 	return &Config{
@@ -51,6 +56,7 @@ func LoadConfig() (*Config, error) {
 		ExploreTTL:       exploreTTL,
 		PrometheusPort:   getEnv("PROMETHEUS_PORT", "2112"),
 		GRPCPort:         getEnv("GRPC_PORT", "9001"),
+		PageSize:         pageSize,
 	}, nil
 }
 
