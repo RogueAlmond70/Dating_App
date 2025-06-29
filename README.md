@@ -113,7 +113,7 @@ The service uses several environment variables to configure connections, timeout
 | `POSTGRES_DB`       | `myappdb`   | PostgreSQL database name                          |
 | `POSTGRES_RETRY`    | `10`        | Number of retry attempts to connect to PostgreSQL |
 | `POSTGRES_DELAY`    | `2s`        | Delay between PostgreSQL retry attempts           |
-| `EXPLORE_TTL`       | `30s`       | TTL for explore data cache                        |
+| `EXPLORE_TTL`       | `5s`        | TTL for explore data cache                        |
 | `PROMETHEUS_PORT`   | `2112`      | Port to expose Prometheus metrics                 |
 | `GRPC_PORT`         | `9001`      | Port for the gRPC server                          |
 | `PAGE_SIZE`         | `25`        | Default page size for paginated list responses    |
@@ -129,7 +129,7 @@ of likes accumulated over many years. Obviously, returning all of these in a Lis
 
 ### Solutions
 
-In this coding challenge I've experimented with a number of solutions and settled on a few which I felt were feasible given the time constraints. Firstly the matter of very popular users who have accumulated a high volume of likes. Each time they refresh to see the number of new likes or hit the ListNewLikedYouRequest endpoint, could put moderate strain on resources. For this I have simply opted to limit results returned to those decisions made within the past year. Now this period of time could change, but I felt a year was reasonable. In addition, I've implemented caching with redis, for the ListLikedYouRequest, ListNewLikedYouRequest, and the CountLikedYouRequest endpoints, with a TTL of 30s (configurable via environment variables). The caching would also significantly limit the impact of high frequency refreshing from users. The TTL for these three endpoints is the same so as not to create a disconnect between the number of likes visibly seen by the user, and the number shown as a value.
+In this coding challenge I've experimented with a number of solutions and settled on a few which I felt were feasible given the time constraints. Firstly the matter of very popular users who have accumulated a high volume of likes. Each time they refresh to see the number of new likes or hit the ListNewLikedYouRequest endpoint, could put moderate strain on resources. For this I have simply opted to limit results returned to those decisions made within the past year. Now this period of time could change, but I felt a year was reasonable. In addition, I've implemented caching with redis, for the ListLikedYouRequest, ListNewLikedYouRequest, and the CountLikedYouRequest endpoints, with a TTL (configurable via environment variables). The caching would also significantly limit the impact of high frequency refreshing from users. The TTL for these three endpoints is the same so as not to create a disconnect between the number of likes visibly seen by the user, and the number shown as a value. It is currently set at 5s, though in production 30s may be more useful.
 
 ### Pagination
 
