@@ -78,6 +78,21 @@ func ConnectDBWithRetry(cfg config.Config, zlog zap.Logger) (*sql.DB, error) {
 
 // GetLikes implements the ListLikedYouRequest.
 func (p *Postgres) GetLikes(ctx context.Context, req *explorepb.ListLikedYouRequest) (*explorepb.ListLikedYouResponse, error) {
+	exists, err := p.userExists(ctx, req.RecipientUserId) // Checking the user exists, before anything else.
+	if err != nil {
+		p.logger.Error("failed to verify user existence",
+			zap.String("method", "GetLikes"),
+			zap.String("recipientID", req.RecipientUserId),
+			zap.Error(err),
+		)
+		return nil, status.Error(codes.Internal, "internal error checking user")
+	}
+	if !exists {
+		p.logger.Error("failed to verify user existence",
+			zap.String("recipientID", req.RecipientUserId),
+			zap.Error(status.Error(codes.NotFound, "recipient user not found")))
+		return nil, status.Error(codes.NotFound, "recipient user not found")
+	}
 	timer := prometheus.NewTimer(metrics.ListLikedYouRequestDurationSeconds)
 	metrics.ListLikedYouRequestsTotal.WithLabelValues("list_liked_you_requests_total").Inc()
 
@@ -235,6 +250,21 @@ func (p *Postgres) GetLikes(ctx context.Context, req *explorepb.ListLikedYouRequ
 
 // GetNewLikes implements ListNewLikedYourRequest, and lists all users who liked the recipient excluding those who have been liked in return.
 func (p *Postgres) GetNewLikes(ctx context.Context, req *explorepb.ListLikedYouRequest) (resp *explorepb.ListLikedYouResponse, err error) {
+	exists, err := p.userExists(ctx, req.RecipientUserId) // Checking the user exists, before anything else.
+	if err != nil {
+		p.logger.Error("failed to verify user existence",
+			zap.String("method", "GetNewLikes"),
+			zap.String("recipientID", req.RecipientUserId),
+			zap.Error(err),
+		)
+		return nil, status.Error(codes.Internal, "internal error checking user")
+	}
+	if !exists {
+		p.logger.Error("failed to verify user existence",
+			zap.String("recipientID", req.RecipientUserId),
+			zap.Error(status.Error(codes.NotFound, "recipient user not found")))
+		return nil, status.Error(codes.NotFound, "recipient user not found")
+	}
 	timer := prometheus.NewTimer(metrics.ListNewLikedYouRequestDurationSeconds)
 	metrics.ListNewLikedYouRequestsTotal.WithLabelValues("list_new_liked_you_requests_total").Inc()
 
@@ -392,6 +422,21 @@ func (p *Postgres) GetNewLikes(ctx context.Context, req *explorepb.ListLikedYouR
 
 // GetCountLikedYou implements CountLikedYouRequest, returning the count of users who have liked the recipient at the time of requesting.
 func (p *Postgres) GetCountLikedYou(ctx context.Context, req *explorepb.CountLikedYouRequest) (resp *explorepb.CountLikedYouResponse, err error) {
+	exists, err := p.userExists(ctx, req.RecipientUserId) // Checking the user exists, before anything else.
+	if err != nil {
+		p.logger.Error("failed to verify user existence",
+			zap.String("method", "GetCountLikedYou"),
+			zap.String("recipientID", req.RecipientUserId),
+			zap.Error(err),
+		)
+		return nil, status.Error(codes.Internal, "internal error checking user")
+	}
+	if !exists {
+		p.logger.Error("failed to verify user existence",
+			zap.String("recipientID", req.RecipientUserId),
+			zap.Error(status.Error(codes.NotFound, "recipient user not found")))
+		return nil, status.Error(codes.NotFound, "recipient user not found")
+	}
 	timer := prometheus.NewTimer(metrics.CountLikedYouRequestDurationSeconds)                  // Setting a timer to track how long the method takes.
 	metrics.CountLikedYouRequestsTotal.WithLabelValues("count_liked_you_requests_total").Inc() // Increment the counter of total requests of this type.
 
@@ -438,6 +483,21 @@ func (p *Postgres) GetCountLikedYou(ctx context.Context, req *explorepb.CountLik
 
 // Record the decision of the actor to like or pass the recipient
 func (p *Postgres) PutDecision(ctx context.Context, req *explorepb.PutDecisionRequest) (resp *explorepb.PutDecisionResponse, err error) {
+	exists, err := p.userExists(ctx, req.RecipientUserId) // Checking the user exists, before anything else.
+	if err != nil {
+		p.logger.Error("failed to verify user existence",
+			zap.String("recipientID", req.RecipientUserId),
+			zap.Error(err),
+		)
+		return nil, status.Error(codes.Internal, "internal error checking user")
+	}
+	if !exists {
+		p.logger.Error("failed to verify user existence",
+			zap.String("method", "PutDecision"),
+			zap.String("recipientID", req.RecipientUserId),
+			zap.Error(status.Error(codes.NotFound, "recipient user not found")))
+		return nil, status.Error(codes.NotFound, "recipient user not found")
+	}
 	timer := prometheus.NewTimer(metrics.PutDecisionRequestDurationSeconds)
 	metrics.PutDecisionRequestsTotal.WithLabelValues("put_decision_requests_total").Inc()
 
@@ -531,4 +591,18 @@ func (p *Postgres) PutDecision(ctx context.Context, req *explorepb.PutDecisionRe
 	return &explorepb.PutDecisionResponse{
 		MutualLikes: mutualLikes,
 	}, nil
+}
+
+func (p *Postgres) userExists(ctx context.Context, userID string) (bool, error) {
+	const query = `SELECT 1 FROM users WHERE id = $1 LIMIT 1`
+
+	var exists int
+	err := p.db.QueryRowContext(ctx, query, userID).Scan(&exists)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return false, nil
+		}
+		return false, err
+	}
+	return true, nil
 }
