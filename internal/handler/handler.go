@@ -8,8 +8,8 @@ import (
 	"time"
 
 	pb "github.com/RogueAlmond70/Muzz/explorepb"
+	"github.com/RogueAlmond70/Muzz/internal/config"
 	"github.com/RogueAlmond70/Muzz/internal/datastore"
-	redis_cache "github.com/RogueAlmond70/Muzz/internal/datastore/redis"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
@@ -19,6 +19,7 @@ type Server struct {
 	pb.UnimplementedExploreServiceServer
 	DB    datastore.DBClient
 	Cache datastore.Cache
+	Cfg   *config.Config
 }
 
 func (s Server) ListLikedYou(ctx context.Context, req *pb.ListLikedYouRequest) (*pb.ListLikedYouResponse, error) {
@@ -53,7 +54,7 @@ func (s Server) ListLikedYou(ctx context.Context, req *pb.ListLikedYouRequest) (
 	// Cache the response if appropriate (see shouldCache for logic).
 	if shouldCache(req) {
 		data, _ := proto.Marshal(response)
-		_ = s.Cache.Set(ctx, cacheKey, data, cfg.)
+		_ = s.Cache.Set(ctx, cacheKey, data, s.Cfg.ExploreTTL)
 	}
 
 	return response, nil
@@ -90,7 +91,7 @@ func (s Server) ListNewLikedYou(ctx context.Context, req *pb.ListLikedYouRequest
 	// Cache the response if appropriate (see shouldCache for logic).
 	if shouldCache(req) {
 		data, _ := proto.Marshal(response)
-		_ = s.Cache.Set(ctx, cacheKey, data, redis_cache.ExploreTTL)
+		_ = s.Cache.Set(ctx, cacheKey, data, s.Cfg.ExploreTTL)
 	}
 	return response, nil
 }
@@ -115,33 +116,16 @@ func (s Server) CountLikedYou(ctx context.Context, req *pb.CountLikedYouRequest)
 
 	// Cache the response. The TTL can be a bit longer than 10 seconds here and not impact user experience.
 	data, _ := proto.Marshal(response)
-	_ = s.Cache.Set(ctx, cacheKey, data, redis_cache.ExploreTTL)
+	_ = s.Cache.Set(ctx, cacheKey, data, s.Cfg.ExploreTTL)
 
 	return response, nil
 }
 
 func (s Server) PutDecision(ctx context.Context, req *pb.PutDecisionRequest) (*pb.PutDecisionResponse, error) {
-	// Create a cacheKey from an identifiable string.
-	cacheKey := fmt.Sprintf("explore:mutualLikes:%s:actorid:%s", req.GetRecipientUserId(), req.GetActorUserId())
-
-	// Check the cache for a bucket matching the key, return data if found.
-	if data, err := s.Cache.Get(ctx, cacheKey); err == nil && data != nil {
-		var resp pb.PutDecisionResponse
-		if err := proto.Unmarshal(data, &resp); err == nil {
-			return &resp, nil
-		}
-	}
-
-	// Query the database if nothing is cached for this request.
 	response, err := s.DB.PutDecision(ctx, req)
 	if err != nil {
 		return nil, fmt.Errorf("unable to set decision request: %v", err)
 	}
-
-	// Cache the response.
-	data, _ := proto.Marshal(response)
-	_ = s.Cache.Set(ctx, cacheKey, data, redis_cache.ExploreTTL)
-
 	return response, nil
 }
 

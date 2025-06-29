@@ -66,12 +66,16 @@ func main() {
 	srv := &handler.Server{
 		DB:    pgClient,
 		Cache: cache,
+		Cfg:   cfg,
 	}
 
 	// Set up Prometheus.
 	go func() {
 		http.Handle("/metrics", promhttp.Handler())
-		zlog.Info("Prometheus metrics available at", zap.String(":", cfg.PrometheusPort), zap.String("/", "metrics"))
+		zlog.Info("Prometheus metrics available",
+			zap.String("host", cfg.PrometheusPort),
+			zap.String("path", "/metrics"),
+		)
 		if err := http.ListenAndServe(":2112", nil); err != nil {
 			zlog.Error("Metrics server failed", zap.Error(err))
 		}
