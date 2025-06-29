@@ -3,25 +3,26 @@ FROM golang:1.24 AS builder
 
 WORKDIR /app
 
-# Cache dependencies
 COPY go.mod go.sum ./
 RUN go mod download
 
-# Copy source code
 COPY . .
 
-# Build the app binary
-RUN go build -o bin/explore-service ./cmd/main.go
+RUN CGO_ENABLED=0 go build -o bin/explore-service ./cmd/main.go
 
-# Final stage - lightweight Debian with newer glibc
+# Final stage
 FROM debian:bookworm-slim
 
-# Copy binary from builder
+RUN useradd -m appuser
+
 COPY --from=builder /app/bin/explore-service /explore-service
 
-# Expose app port
 EXPOSE 8080
 EXPOSE 2112
+EXPOSE 9001
 
-# Run the binary
+USER appuser
+
 ENTRYPOINT ["/explore-service"]
+
+HEALTHCHECK --interval=30s --timeout=5s CMD curl -f http://localhost:8080/health || exit 1
