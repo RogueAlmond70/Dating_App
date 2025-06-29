@@ -19,6 +19,7 @@ import (
 	"google.golang.org/grpc/status"
 )
 
+var ErrUserNotFound = errors.New("user not found")
 var _ datastore.DBClient = &Postgres{}
 
 type Postgres struct {
@@ -85,13 +86,13 @@ func (p *Postgres) GetLikes(ctx context.Context, req *explorepb.ListLikedYouRequ
 			zap.String("recipientID", req.RecipientUserId),
 			zap.Error(err),
 		)
-		return nil, status.Error(codes.Internal, "internal error checking user")
+		return nil, fmt.Errorf("failed to verify user existence: %w", err)
 	}
 	if !exists {
 		p.logger.Error("failed to verify user existence",
 			zap.String("recipientID", req.RecipientUserId),
 			zap.Error(status.Error(codes.NotFound, "recipient user not found")))
-		return nil, status.Error(codes.NotFound, "recipient user not found")
+		return nil, fmt.Errorf("failed to verify user existence: %w", ErrUserNotFound)
 	}
 	timer := prometheus.NewTimer(metrics.ListLikedYouRequestDurationSeconds)
 	metrics.ListLikedYouRequestsTotal.WithLabelValues("list_liked_you_requests_total").Inc()
@@ -257,13 +258,13 @@ func (p *Postgres) GetNewLikes(ctx context.Context, req *explorepb.ListLikedYouR
 			zap.String("recipientID", req.RecipientUserId),
 			zap.Error(err),
 		)
-		return nil, status.Error(codes.Internal, "internal error checking user")
+		return nil, fmt.Errorf("failed to verify user existence: %w", err)
 	}
 	if !exists {
 		p.logger.Error("failed to verify user existence",
 			zap.String("recipientID", req.RecipientUserId),
 			zap.Error(status.Error(codes.NotFound, "recipient user not found")))
-		return nil, status.Error(codes.NotFound, "recipient user not found")
+		return nil, fmt.Errorf("failed to verify user existence: %w", ErrUserNotFound)
 	}
 	timer := prometheus.NewTimer(metrics.ListNewLikedYouRequestDurationSeconds)
 	metrics.ListNewLikedYouRequestsTotal.WithLabelValues("list_new_liked_you_requests_total").Inc()
@@ -429,13 +430,13 @@ func (p *Postgres) GetCountLikedYou(ctx context.Context, req *explorepb.CountLik
 			zap.String("recipientID", req.RecipientUserId),
 			zap.Error(err),
 		)
-		return nil, status.Error(codes.Internal, "internal error checking user")
+		return nil, fmt.Errorf("failed to verify user existence: %w", err)
 	}
 	if !exists {
 		p.logger.Error("failed to verify user existence",
 			zap.String("recipientID", req.RecipientUserId),
 			zap.Error(status.Error(codes.NotFound, "recipient user not found")))
-		return nil, status.Error(codes.NotFound, "recipient user not found")
+		return nil, fmt.Errorf("failed to verify user existence: %w", ErrUserNotFound)
 	}
 	timer := prometheus.NewTimer(metrics.CountLikedYouRequestDurationSeconds)                  // Setting a timer to track how long the method takes.
 	metrics.CountLikedYouRequestsTotal.WithLabelValues("count_liked_you_requests_total").Inc() // Increment the counter of total requests of this type.
@@ -483,21 +484,40 @@ func (p *Postgres) GetCountLikedYou(ctx context.Context, req *explorepb.CountLik
 
 // Record the decision of the actor to like or pass the recipient
 func (p *Postgres) PutDecision(ctx context.Context, req *explorepb.PutDecisionRequest) (resp *explorepb.PutDecisionResponse, err error) {
-	exists, err := p.userExists(ctx, req.RecipientUserId) // Checking the user exists, before anything else.
+	recipientExists, err := p.userExists(ctx, req.RecipientUserId) // Checking the user exists, before anything else.
 	if err != nil {
 		p.logger.Error("failed to verify user existence",
 			zap.String("recipientID", req.RecipientUserId),
 			zap.Error(err),
 		)
-		return nil, status.Error(codes.Internal, "internal error checking user")
+		return nil, fmt.Errorf("failed to verify user existence: %w", err)
 	}
-	if !exists {
+	if !recipientExists {
 		p.logger.Error("failed to verify user existence",
 			zap.String("method", "PutDecision"),
 			zap.String("recipientID", req.RecipientUserId),
 			zap.Error(status.Error(codes.NotFound, "recipient user not found")))
-		return nil, status.Error(codes.NotFound, "recipient user not found")
+		return nil, fmt.Errorf("failed to verify user existence: %w", ErrUserNotFound)
 	}
+
+	// I had considered using a separate method that takes two user IDs to check them, but it would only be used in
+	// this method.
+	actorExists, err := p.userExists(ctx, req.ActorUserId)
+	if err != nil {
+		p.logger.Error("failed to verify user existence",
+			zap.String("actorID", req.ActorUserId),
+			zap.Error(err),
+		)
+		return nil, fmt.Errorf("failed to verify user existence: %w", err)
+	}
+	if !actorExists {
+		p.logger.Error("failed to verify user existence",
+			zap.String("method", "PutDecision"),
+			zap.String("actorID", req.ActorUserId),
+			zap.Error(status.Error(codes.NotFound, "actor user not found")))
+		return nil, fmt.Errorf("failed to verify user existence: %w", err)
+	}
+
 	timer := prometheus.NewTimer(metrics.PutDecisionRequestDurationSeconds)
 	metrics.PutDecisionRequestsTotal.WithLabelValues("put_decision_requests_total").Inc()
 
@@ -602,7 +622,7 @@ func (p *Postgres) userExists(ctx context.Context, userID string) (bool, error) 
 		if errors.Is(err, sql.ErrNoRows) {
 			return false, nil
 		}
-		return false, err
+		return false, ErrUserNotFound
 	}
 	return true, nil
 }

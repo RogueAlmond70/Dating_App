@@ -105,6 +105,36 @@ docker logs -f "explore-service"
 
 - Your gRPC client will be able to communicate with the server via localhost:9001 if running locally, or via explore-server:9001 if on the same docker network.
 
+## Data
+
+- The table schemas are as follows:
+
+```
+CREATE TABLE users (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL
+);
+
+CREATE TABLE likes (
+    id SERIAL PRIMARY KEY,
+    liker_id TEXT NOT NULL,
+    liked_id TEXT NOT NULL,
+    created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    decision BOOLEAN, -- Using true / false for whether the actor likes the recipient.
+    decision_at TIMESTAMP,
+    UNIQUE (liker_id, liked_id) -- This enables updating of a row when liker_id and liked_id match the existing row.
+);
+
+CREATE INDEX idx_likes_liked_id ON likes (liked_id);
+CREATE INDEX idx_likes_liker_id ON likes (liker_id);
+CREATE INDEX idx_likes_liked_created ON likes (liked_id, created_at DESC);
+```
+
+- The docker-compose file will run the init.sql to populate the tables on building the image. The users table has 55 users, roughly evenly split by gender.
+- Usernames are simply 'userX' where X is a number, e.g user1, user34, and so on.
+- The likes table is comprised of 40 mutual likes, 86 one-way likes, and 12 "dislikes". The assumption in this case being that a decision does not exist (null) until it is actively made. So a decision status of "false" implies an active dislike.
+- On average, users have liked 2 to 4 other users. For the purpose of testing pagination, user55 has had 26 likes, none reciprocated.
+
 ### Observability
 
 ## Prometheus Metrics
@@ -142,6 +172,8 @@ I've also provided a basic Grafana dashboard where these metrics can be viewed. 
 
 - username: admin
 - password: muzzd8
+
+The dashboard can be found in the dashboards section, and is named Explore-Service-Aaron-King.
 
 ### Final thoughts
 
